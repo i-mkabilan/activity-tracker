@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Standard Work Tracker</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="frame">
+
+  <header class="topbar">
+    <div class="mark">SW</div>
+    <div class="topbar-text">
+      <p class="title">Standard Work Tracker</p>
+      <p class="date" id="todayLabel"></p>
+    </div>
+    <div class="streak" id="streakBadge">0-day streak</div>
+  </header>
+
+  <nav class="tiers">
+    <button class="tier-btn active" data-tier="daily">Daily</button>
+    <button class="tier-btn" data-tier="weekly">Weekly</button>
+    <button class="tier-btn" data-tier="monthly">Monthly</button>
+  </nav>
+
+  <main>
+    <section class="panel">
+      <div class="panel-head">
+        <span class="panel-label" id="tierLabel">Today's routine</span>
+        <span class="panel-count" id="tierCount">0 / 0 done</span>
+      </div>
+      <div id="activityList" class="activity-list"></div>
+      <button class="add-btn" id="addBtn">+ Add activity</button>
+    </section>
+
+    <section class="panel analytics-panel">
+      <div class="panel-head">
+        <span class="panel-label">Time ledger</span>
+        <span class="panel-count" id="timeLabel"></span>
+      </div>
+
+      <div class="time-bars">
+        <div class="time-row">
+          <span class="time-row-label">Daily</span>
+          <div class="time-bar"><div class="time-fill" id="fillDaily"></div></div>
+          <span class="time-row-val" id="valDaily"></span>
+        </div>
+        <div class="time-row">
+          <span class="time-row-label">Weekly</span>
+          <div class="time-bar"><div class="time-fill" id="fillWeekly"></div></div>
+          <span class="time-row-val" id="valWeekly"></span>
+        </div>
+        <div class="time-row">
+          <span class="time-row-label">Monthly</span>
+          <div class="time-bar"><div class="time-fill" id="fillMonthly"></div></div>
+          <span class="time-row-val" id="valMonthly"></span>
+        </div>
+      </div>
+
+      <div class="panel-head" style="margin-top:22px;">
+        <span class="panel-label">Last 7 days</span>
+      </div>
+      <div class="week-bars" id="weekBars"></div>
+    </section>
+  </main>
+
+</div>
+
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal">
+    <p class="modal-title">New activity</p>
+    <label>Name</label>
+    <input type="text" id="newName" placeholder="e.g. Vendor review call" />
+    <label>Tier</label>
+    <select id="newTier">
+      <option value="daily">Daily</option>
+      <option value="weekly">Weekly</option>
+      <option value="monthly">Monthly</option>
+    </select>
+    <label>Allotted minutes</label>
+    <input type="number" id="newMinutes" placeholder="30" />
+    <div class="modal-actions">
+      <button class="btn-ghost" id="cancelBtn">Cancel</button>
+      <button class="btn-solid" id="saveBtn">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
