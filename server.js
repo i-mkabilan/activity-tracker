@@ -54,8 +54,15 @@ function markSent(activityId, dateKey) {
   db.prepare('INSERT OR IGNORE INTO sent_log (activity_id, date) VALUES (?, ?)').run(activityId, dateKey);
 }
 
+app.get('/api/debug', (req, res) => {
+  const activities = db.prepare('SELECT id, name, tier, reminder_time, fixed_day FROM activities WHERE archived = 0').all();
+  const subs = db.prepare('SELECT id, endpoint, created_at FROM push_subscriptions').all();
+  res.json({ serverTimeNow: nowParts(), activities, subscriptionCount: subs.length, subscriptions: subs });
+});
+
 cron.schedule('* * * * *', async () => {
   const { time, day, date, dateOfMonth } = nowParts();
+  console.log(`[cron tick] ${date} ${day} ${time}`);
   const activities = db.prepare('SELECT * FROM activities WHERE archived = 0').all();
 
   for (const a of activities) {
