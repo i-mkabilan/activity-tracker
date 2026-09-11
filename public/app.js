@@ -142,3 +142,53 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
 
 loadActivities();
 loadAnalytics();
+
+// ---- Push notifications ----
+const VAPID_PUBLIC_KEY = 'BFg-HGhCoNz_FRRg3HJck-NX7fPuThp2DqP5nQG4qKj8PUXteX8xAVBnEJeeWTVPXVCWzEslEneh28HoBf_ksNs';
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+
+async function initPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+
+  const reg = await navigator.serviceWorker.register('/sw.js');
+  const existing = await reg.pushManager.getSubscription();
+
+  if (existing) return; // already subscribed
+
+  if (Notification.permission === 'default') {
+    document.getElementById('notifyBanner').style.display = 'flex';
+  } else if (Notification.permission === 'granted') {
+    subscribe(reg);
+  }
+}
+
+async function subscribe(reg) {
+  const sub = await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+  });
+  await fetch('/api/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(sub)
+  });
+  document.getElementById('notifyBanner').style.display = 'none';
+}
+
+document.getElementById('notifyBtn').addEventListener('click', async () => {
+  const permission = await Notification.requestPermission();
+  if (permission === 'granted') {
+    const reg = await navigator.serviceWorker.ready;
+    subscribe(reg);
+  } else {
+    document.getElementById('notifyBanner').style.display = 'none';
+  }
+});
+
+initPush();

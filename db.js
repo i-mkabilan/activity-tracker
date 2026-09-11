@@ -25,6 +25,20 @@ db.exec(`
     UNIQUE(activity_id, date),
     FOREIGN KEY(activity_id) REFERENCES activities(id)
   );
+
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    endpoint TEXT NOT NULL UNIQUE,
+    subscription_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS sent_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    activity_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    UNIQUE(activity_id, date)
+  );
 `);
 
 // Seed with the Leader Standard Work sample activities, only if the table is empty

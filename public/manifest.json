@@ -1,0 +1,11 @@
+{
+  "name": "Standard Work Tracker",
+  "short_name": "SW Tracker",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#edf0ea",
+  "theme_color": "#1e2621",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }
+  ]
+}

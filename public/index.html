@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Standard Work Tracker</title>
 <link rel="stylesheet" href="style.css" />
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#1e2621" />
 </head>
 <body>
 
@@ -18,6 +20,11 @@
     </div>
     <div class="streak" id="streakBadge">0-day streak</div>
   </header>
+
+  <div id="notifyBanner" class="notify-banner" style="display:none;">
+    <span>Turn on reminders for daily, weekly and monthly activities.</span>
+    <button id="notifyBtn">Enable</button>
+  </div>
 
   <nav class="tiers">
     <button class="tier-btn active" data-tier="daily">Daily</button>

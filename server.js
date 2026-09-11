@@ -1,10 +1,108 @@
 const express = require('express');
 const path = require('path');
+const webpush = require('web-push');
+const cron = require('node-cron');
 const db = require('./db');
 
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ---- Push setup ----
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BFg-HGhCoNz_FRRg3HJck-NX7fPuThp2DqP5nQG4qKj8PUXteX8xAVBnEJeeWTVPXVCWzEslEneh28HoBf_ksNs';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'gKL2m9xowYtMr_N2ulJzIYszLOPHiFiEGu7ZkOJIfbA';
+webpush.setVapidDetails('mailto:you@example.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+
+app.post('/api/subscribe', (req, res) => {
+  const sub = req.body;
+  db.prepare(`
+    INSERT INTO push_subscriptions (endpoint, subscription_json)
+    VALUES (?, ?)
+    ON CONFLICT(endpoint) DO UPDATE SET subscription_json = ?
+  `).run(sub.endpoint, JSON.stringify(sub), JSON.stringify(sub));
+  res.json({ ok: true });
+});
+
+async function sendPush(title, body, tag) {
+  const subs = db.prepare('SELECT * FROM push_subscriptions').all();
+  for (const row of subs) {
+    try {
+      await webpush.sendNotification(JSON.parse(row.subscription_json), JSON.stringify({ title, body, tag }));
+    } catch (err) {
+      if (err.statusCode === 404 || err.statusCode === 410) {
+        db.prepare('DELETE FROM push_subscriptions WHERE id = ?').run(row.id);
+      } else {
+        console.error('Push error:', err.message);
+      }
+    }
+  }
+}
+
+// ---- Scheduler: runs every minute, checks activities against current time ----
+function nowParts() {
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return { time: `${hh}:${mm}`, day: dayNames[now.getDay()], date: now.toISOString().slice(0, 10), dateOfMonth: String(now.getDate()) };
+}
+
+function alreadySent(activityId, dateKey) {
+  return !!db.prepare('SELECT 1 FROM sent_log WHERE activity_id = ? AND date = ?').get(activityId, dateKey);
+}
+function markSent(activityId, dateKey) {
+  db.prepare('INSERT OR IGNORE INTO sent_log (activity_id, date) VALUES (?, ?)').run(activityId, dateKey);
+}
+
+cron.schedule('* * * * *', async () => {
+  const { time, day, date, dateOfMonth } = nowParts();
+  const activities = db.prepare('SELECT * FROM activities WHERE archived = 0').all();
+
+  for (const a of activities) {
+    // Daily: fires every day at reminder_time
+    if (a.tier === 'daily' && a.reminder_time === time) {
+      const key = `${date}`;
+      if (!alreadySent(a.id, key)) {
+        await sendPush(`${a.time_of_day || 'Reminder'}: ${a.name}`, `${a.allotted_minutes} min allotted`, `daily-${a.id}`);
+        markSent(a.id, key);
+      }
+    }
+
+    // Weekly: fixed day + time
+    if (a.tier === 'weekly' && a.fixed_day === day && a.reminder_time === time) {
+      const key = `${date}`;
+      if (!alreadySent(a.id, key)) {
+        await sendPush(a.name, `Weekly · ${a.allotted_minutes} min allotted`, `weekly-${a.id}`);
+        markSent(a.id, key);
+      }
+    }
+
+    // Monthly: fixed date-of-month + time
+    if (a.tier === 'monthly' && a.fixed_day === dateOfMonth && a.reminder_time === time) {
+      const key = `${date}`;
+      if (!alreadySent(a.id, key)) {
+        await sendPush(a.name, `Monthly · ${a.allotted_minutes} min allotted`, `monthly-${a.id}`);
+        markSent(a.id, key);
+      }
+    }
+  }
+
+  // Monday 09:00 — summary of weekly items with no fixed day
+  if (day === 'Mon' && time === '09:00') {
+    const loose = activities.filter(a => a.tier === 'weekly' && !a.fixed_day);
+    if (loose.length) {
+      await sendPush('This week', loose.map(a => a.name).join(', '), 'weekly-summary');
+    }
+  }
+
+  // 1st of month, 09:00 — summary of monthly items with no fixed date
+  if (dateOfMonth === '1' && time === '09:00') {
+    const loose = activities.filter(a => a.tier === 'monthly' && !a.fixed_day);
+    if (loose.length) {
+      await sendPush('This month', loose.map(a => a.name).join(', '), 'monthly-summary');
+    }
+  }
+}, { timezone: 'Asia/Kolkata' });
 
 // ---- Helpers ----
 function isoDate(d) {
