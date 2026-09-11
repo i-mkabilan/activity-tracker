@@ -144,6 +144,15 @@ app.delete('/api/activities/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+app.patch('/api/activities/:id', (req, res) => {
+  const { reminder_time, time_of_day, fixed_day } = req.body;
+  const a = db.prepare('SELECT * FROM activities WHERE id = ?').get(req.params.id);
+  if (!a) return res.status(404).json({ error: 'not found' });
+  db.prepare('UPDATE activities SET reminder_time = ?, time_of_day = ?, fixed_day = ? WHERE id = ?')
+    .run(reminder_time ?? a.reminder_time, time_of_day ?? a.time_of_day, fixed_day ?? a.fixed_day, req.params.id);
+  res.json({ ok: true });
+});
+
 // ---- Completions ----
 // Toggle or set completion for an activity on a given date (defaults to today)
 app.post('/api/completions', (req, res) => {
