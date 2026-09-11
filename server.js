@@ -47,11 +47,45 @@ function nowParts() {
   return { time: `${hh}:${mm}`, day: dayNames[now.getDay()], date: now.toISOString().slice(0, 10), dateOfMonth: String(now.getDate()) };
 }
 
-function alreadySent(activityId, dateKey) {
-  return !!db.prepare('SELECT 1 FROM sent_log WHERE activity_id = ? AND date = ?').get(activityId, dateKey);
+function digestSent(kind, dateKey, slot) {
+  return !!db.prepare('SELECT 1 FROM digest_log WHERE kind = ? AND date = ? AND slot = ?').get(kind, dateKey, slot);
 }
-function markSent(activityId, dateKey) {
-  db.prepare('INSERT OR IGNORE INTO sent_log (activity_id, date) VALUES (?, ?)').run(activityId, dateKey);
+function markDigestSent(kind, dateKey, slot) {
+  db.prepare('INSERT OR IGNORE INTO digest_log (kind, date, slot) VALUES (?, ?, ?)').run(kind, dateKey, slot);
+}
+
+function isCompletedOn(activityId, dateStr) {
+  return !!db.prepare('SELECT 1 FROM completions WHERE activity_id = ? AND date = ? AND done = 1').get(activityId, dateStr);
+}
+function isCompletedSince(activityId, sinceStr, todayStr) {
+  return !!db.prepare('SELECT 1 FROM completions WHERE activity_id = ? AND date >= ? AND date <= ? AND done = 1')
+    .get(activityId, sinceStr, todayStr);
+}
+
+
+app.get('/api/settings', (req, res) => {
+  const rows = db.prepare('SELECT * FROM settings').all();
+  const out = {};
+  rows.forEach(r => out[r.key] = r.value);
+  res.json(out);
+});
+
+app.post('/api/settings', (req, res) => {
+  const upsert = db.prepare(`
+    INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = ?
+  `);
+  for (const [k, v] of Object.entries(req.body)) {
+    upsert.run(k, v, v);
+  }
+  res.json({ ok: true });
+});
+
+function getSettings() {
+  const rows = db.prepare('SELECT * FROM settings').all();
+  const out = {};
+  rows.forEach(r => out[r.key] = r.value);
+  return out;
 }
 
 app.get('/api/debug', (req, res) => {
@@ -61,53 +95,60 @@ app.get('/api/debug', (req, res) => {
 });
 
 cron.schedule('* * * * *', async () => {
-  const { time, day, date, dateOfMonth } = nowParts();
-  console.log(`[cron tick] ${date} ${day} ${time}`);
+  const { time, date } = nowParts();
+  console.log(`[cron tick] ${date} ${time}`);
   const activities = db.prepare('SELECT * FROM activities WHERE archived = 0').all();
+  const settings = getSettings();
 
-  for (const a of activities) {
-    // Daily: fires every day at reminder_time
-    if (a.tier === 'daily' && a.reminder_time === time) {
-      const key = `${date}`;
-      if (!alreadySent(a.id, key)) {
-        await sendPush(`${a.time_of_day || 'Reminder'}: ${a.name}`, `${a.allotted_minutes} min allotted`, `daily-${a.id}`);
-        markSent(a.id, key);
-      }
-    }
+  // ---- Daily: at each distinct daily reminder time, list everything due-so-far that's still unfinished ----
+  const dailyActs = activities.filter(a => a.tier === 'daily' && a.reminder_time);
+  const distinctDailyTimes = [...new Set(dailyActs.map(a => a.reminder_time))];
 
-    // Weekly: fixed day + time
-    if (a.tier === 'weekly' && a.fixed_day === day && a.reminder_time === time) {
-      const key = `${date}`;
-      if (!alreadySent(a.id, key)) {
-        await sendPush(a.name, `Weekly · ${a.allotted_minutes} min allotted`, `weekly-${a.id}`);
-        markSent(a.id, key);
-      }
+  if (distinctDailyTimes.includes(time) && !digestSent('daily', date, time)) {
+    const pending = dailyActs.filter(a => a.reminder_time <= time && !isCompletedOn(a.id, date));
+    if (pending.length) {
+      const names = pending.map(a => a.name).join(', ');
+      await sendPush(`${pending.length} daily activities remaining`, names, 'daily-digest');
     }
-
-    // Monthly: fixed date-of-month + time
-    if (a.tier === 'monthly' && a.fixed_day === dateOfMonth && a.reminder_time === time) {
-      const key = `${date}`;
-      if (!alreadySent(a.id, key)) {
-        await sendPush(a.name, `Monthly · ${a.allotted_minutes} min allotted`, `monthly-${a.id}`);
-        markSent(a.id, key);
-      }
-    }
+    markDigestSent('daily', date, time);
   }
 
-  // Monday 09:00 — summary of weekly items with no fixed day
-  if (day === 'Mon' && time === '09:00') {
-    const loose = activities.filter(a => a.tier === 'weekly' && !a.fixed_day);
-    if (loose.length) {
-      await sendPush('This week', loose.map(a => a.name).join(', '), 'weekly-summary');
+  // ---- Weekly: two checkpoints a day (first half / second half), within working hours ----
+  const weeklyTimes = [settings.weekly_time_1, settings.weekly_time_2].filter(Boolean);
+  if (weeklyTimes.includes(time) && !digestSent('weekly', date, time)) {
+    const weekStart = isoDate(startOfWeek(new Date()));
+    const pending = activities.filter(a => a.tier === 'weekly' && !isCompletedSince(a.id, weekStart, date));
+    if (pending.length) {
+      const names = pending.map(a => a.name).join(', ');
+      await sendPush(`${pending.length} weekly activities remaining`, names, 'weekly-digest');
     }
+    markDigestSent('weekly', date, time);
   }
 
-  // 1st of month, 09:00 — summary of monthly items with no fixed date
-  if (dateOfMonth === '1' && time === '09:00') {
-    const loose = activities.filter(a => a.tier === 'monthly' && !a.fixed_day);
-    if (loose.length) {
-      await sendPush('This month', loose.map(a => a.name).join(', '), 'monthly-summary');
+  // ---- Monthly: two checkpoints a day, within working hours ----
+  const monthlyTimes = [settings.monthly_time_1, settings.monthly_time_2].filter(Boolean);
+  if (monthlyTimes.includes(time) && !digestSent('monthly', date, time)) {
+    const monthStart = date.slice(0, 7) + '-01';
+    const pending = activities.filter(a => a.tier === 'monthly' && !isCompletedSince(a.id, monthStart, date));
+    if (pending.length) {
+      const names = pending.map(a => a.name).join(', ');
+      await sendPush(`${pending.length} monthly activities remaining`, names, 'monthly-digest');
     }
+    markDigestSent('monthly', date, time);
+  }
+
+  // ---- End of day: today's status + tomorrow's daily lineup ----
+  if (time === settings.eod_time && !digestSent('eod', date, time)) {
+    const doneToday = dailyActs.filter(a => isCompletedOn(a.id, date));
+    const pendingToday = dailyActs.filter(a => !isCompletedOn(a.id, date));
+    const tomorrowNames = dailyActs.map(a => a.name);
+
+    let body = `Today: ${doneToday.length}/${dailyActs.length} done.`;
+    if (pendingToday.length) body += ` Missed: ${pendingToday.map(a => a.name).join(', ')}.`;
+    if (tomorrowNames.length) body += ` Tomorrow: ${tomorrowNames.join(', ')}.`;
+
+    await sendPush('Daily status', body, 'eod-digest');
+    markDigestSent('eod', date, time);
   }
 }, { timezone: 'Asia/Kolkata' });
 

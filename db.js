@@ -39,7 +39,30 @@ db.exec(`
     date TEXT NOT NULL,
     UNIQUE(activity_id, date)
   );
+
+  CREATE TABLE IF NOT EXISTS digest_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    date TEXT NOT NULL,
+    slot TEXT NOT NULL,
+    UNIQUE(kind, date, slot)
+  );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
+
+const defaultSettings = {
+  weekly_time_1: '10:00',
+  weekly_time_2: '16:00',
+  monthly_time_1: '10:15',
+  monthly_time_2: '16:15',
+  eod_time: '18:00',
+};
+const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
+for (const [k, v] of Object.entries(defaultSettings)) insertSetting.run(k, v);
 
 // Seed with the Leader Standard Work sample activities, only if the table is empty
 const count = db.prepare('SELECT COUNT(*) AS c FROM activities').get().c;

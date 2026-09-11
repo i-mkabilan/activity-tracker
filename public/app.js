@@ -192,3 +192,36 @@ document.getElementById('notifyBtn').addEventListener('click', async () => {
 });
 
 initPush();
+
+// ---- Settings modal ----
+const settingsBackdrop = document.getElementById('settingsBackdrop');
+
+document.getElementById('settingsBtn').addEventListener('click', async () => {
+  const s = await fetch('/api/settings').then(r => r.json());
+  document.getElementById('setWeekly1').value = s.weekly_time_1 || '';
+  document.getElementById('setWeekly2').value = s.weekly_time_2 || '';
+  document.getElementById('setMonthly1').value = s.monthly_time_1 || '';
+  document.getElementById('setMonthly2').value = s.monthly_time_2 || '';
+  document.getElementById('setEod').value = s.eod_time || '';
+  settingsBackdrop.classList.add('open');
+});
+
+document.getElementById('settingsCancelBtn').addEventListener('click', () => {
+  settingsBackdrop.classList.remove('open');
+});
+
+document.getElementById('settingsSaveBtn').addEventListener('click', async () => {
+  const payload = {
+    weekly_time_1: document.getElementById('setWeekly1').value,
+    weekly_time_2: document.getElementById('setWeekly2').value,
+    monthly_time_1: document.getElementById('setMonthly1').value,
+    monthly_time_2: document.getElementById('setMonthly2').value,
+    eod_time: document.getElementById('setEod').value,
+  };
+  await fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  settingsBackdrop.classList.remove('open');
+});

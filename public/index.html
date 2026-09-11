@@ -21,6 +21,7 @@
       <p class="date" id="todayLabel"></p>
     </div>
     <div class="streak" id="streakBadge">0-day streak</div>
+    <button class="settings-btn" id="settingsBtn" title="Notification times">⚙</button>
   </header>
 
   <div id="notifyBanner" class="notify-banner" style="display:none;">
@@ -93,6 +94,30 @@
     <div class="modal-actions">
       <button class="btn-ghost" id="cancelBtn">Cancel</button>
       <button class="btn-solid" id="saveBtn">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="settingsBackdrop">
+  <div class="modal">
+    <p class="modal-title">Notification times</p>
+
+    <label>Weekly check-in — first half</label>
+    <input type="time" id="setWeekly1" />
+    <label>Weekly check-in — second half</label>
+    <input type="time" id="setWeekly2" />
+
+    <label>Monthly check-in — first half</label>
+    <input type="time" id="setMonthly1" />
+    <label>Monthly check-in — second half</label>
+    <input type="time" id="setMonthly2" />
+
+    <label>End-of-day status</label>
+    <input type="time" id="setEod" />
+
+    <div class="modal-actions">
+      <button class="btn-ghost" id="settingsCancelBtn">Cancel</button>
+      <button class="btn-solid" id="settingsSaveBtn">Save</button>
     </div>
   </div>
 </div>
