@@ -1,4 +1,5 @@
 let currentTier = 'daily';
+let editingActivityId = null;
 const todayStr = new Date().toISOString().slice(0, 10);
 
 document.getElementById('todayLabel').textContent = new Date().toLocaleDateString(undefined, {
@@ -13,6 +14,8 @@ document.querySelectorAll('.tier-btn').forEach(btn => {
     document.getElementById('tierLabel').textContent =
       currentTier === 'daily' ? "Today's routine" :
       currentTier === 'weekly' ? "This week" : "This month";
+    document.getElementById('tierHint').textContent =
+      currentTier === 'daily' ? '' : 'Notification times for this tier are set in ⚙ Settings, not per activity.';
     loadActivities();
   });
 });
@@ -54,6 +57,7 @@ async function loadActivities() {
         <p class="act-meta">${metaParts.join(' · ')}</p>
       </div>
       ${a.fixed_day ? `<span class="tag">${a.fixed_day}</span>` : ''}
+      ${a.tier === 'daily' ? `<button class="edit-time" data-edit="${a.id}" data-name="${a.name.replace(/"/g, '&quot;')}" data-time="${a.reminder_time || ''}" title="Edit reminder time">⏰</button>` : ''}
       <button class="del" data-del="${a.id}">&times;</button>
     `;
     list.appendChild(row);
@@ -72,6 +76,15 @@ async function loadActivities() {
       });
       loadActivities();
       loadAnalytics();
+    });
+  });
+
+  list.querySelectorAll('[data-edit]').forEach(el => {
+    el.addEventListener('click', () => {
+      editingActivityId = el.dataset.edit;
+      document.getElementById('editTimeName').textContent = el.dataset.name;
+      document.getElementById('editTimeInput').value = el.dataset.time;
+      document.getElementById('editTimeBackdrop').classList.add('open');
     });
   });
 
@@ -192,6 +205,27 @@ document.getElementById('notifyBtn').addEventListener('click', async () => {
 });
 
 initPush();
+
+// ---- Edit reminder time modal ----
+const editTimeBackdrop = document.getElementById('editTimeBackdrop');
+
+document.getElementById('editTimeCancelBtn').addEventListener('click', () => {
+  editTimeBackdrop.classList.remove('open');
+  editingActivityId = null;
+});
+
+document.getElementById('editTimeSaveBtn').addEventListener('click', async () => {
+  const newTime = document.getElementById('editTimeInput').value;
+  if (!editingActivityId || !newTime) return;
+  await fetch(`/api/activities/${editingActivityId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reminder_time: newTime })
+  });
+  editTimeBackdrop.classList.remove('open');
+  editingActivityId = null;
+  loadActivities();
+});
 
 // ---- Settings modal ----
 const settingsBackdrop = document.getElementById('settingsBackdrop');

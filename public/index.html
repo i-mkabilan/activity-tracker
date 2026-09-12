@@ -41,6 +41,7 @@
         <span class="panel-label" id="tierLabel">Today's routine</span>
         <span class="panel-count" id="tierCount">0 / 0 done</span>
       </div>
+      <p class="tier-hint" id="tierHint"></p>
       <div id="activityList" class="activity-list"></div>
       <button class="add-btn" id="addBtn">+ Add activity</button>
     </section>
@@ -94,6 +95,19 @@
     <div class="modal-actions">
       <button class="btn-ghost" id="cancelBtn">Cancel</button>
       <button class="btn-solid" id="saveBtn">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="editTimeBackdrop">
+  <div class="modal">
+    <p class="modal-title">Reminder time</p>
+    <p class="modal-sub" id="editTimeName"></p>
+    <label>Time</label>
+    <input type="time" id="editTimeInput" />
+    <div class="modal-actions">
+      <button class="btn-ghost" id="editTimeCancelBtn">Cancel</button>
+      <button class="btn-solid" id="editTimeSaveBtn">Save</button>
     </div>
   </div>
 </div>
