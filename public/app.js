@@ -11,6 +11,16 @@ document.querySelectorAll('.tier-btn').forEach(btn => {
     document.querySelectorAll('.tier-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     currentTier = btn.dataset.tier;
+
+    if (currentTier === 'history') {
+      document.getElementById('mainView').style.display = 'none';
+      document.getElementById('historyPanel').style.display = 'block';
+      loadHistory();
+      return;
+    }
+    document.getElementById('mainView').style.display = '';
+    document.getElementById('historyPanel').style.display = 'none';
+
     document.getElementById('tierLabel').textContent =
       currentTier === 'daily' ? "Today's routine" :
       currentTier === 'weekly' ? "This week" : "This month";
@@ -18,6 +28,40 @@ document.querySelectorAll('.tier-btn').forEach(btn => {
       currentTier === 'daily' ? '' : 'Notification times for this tier are set in ⚙ Settings, not per activity.';
     loadActivities();
   });
+});
+
+async function loadHistory() {
+  const h = await fetch('/api/history').then(r => r.json());
+
+  const dailyList = document.getElementById('historyDailyList');
+  dailyList.innerHTML = h.daily.map(d => `
+    <div class="history-day-row">
+      <span class="history-day-date">${d.label}</span>
+      <span class="history-day-stat ${d.done === d.total && d.total > 0 ? 'full' : ''}">${d.done}/${d.total} done</span>
+    </div>
+  `).join('') || '<div class="empty">No history yet.</div>';
+
+  const weeklyList = document.getElementById('historyWeeklyList');
+  weeklyList.innerHTML = h.weekly.map(w => `
+    <div class="history-row-item">
+      <span class="history-day-date">${w.label}</span>
+      <span class="history-day-stat ${w.done === w.total && w.total > 0 ? 'full' : ''}">${w.done}/${w.total} completed</span>
+    </div>
+  `).join('') || '<div class="empty">No history yet.</div>';
+
+  const monthlyList = document.getElementById('historyMonthlyList');
+  monthlyList.innerHTML = h.monthly.map(m => `
+    <div class="history-row-item">
+      <span class="history-day-date">${m.label}</span>
+      <span class="history-day-stat ${m.done === m.total && m.total > 0 ? 'full' : ''}">${m.done}/${m.total} completed</span>
+    </div>
+  `).join('') || '<div class="empty">No history yet.</div>';
+}
+
+document.getElementById('reportMonth').value = new Date().toISOString().slice(0, 7);
+document.getElementById('downloadReportBtn').addEventListener('click', () => {
+  const month = document.getElementById('reportMonth').value;
+  window.open(`/api/report/monthly?month=${month}`, '_blank');
 });
 
 async function loadActivities() {

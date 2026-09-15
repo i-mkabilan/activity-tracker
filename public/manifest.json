@@ -1,6 +1,6 @@
 {
-  "name": "Standard Work Tracker",
-  "short_name": "SW Tracker",
+  "name": "Leadership Standard Work",
+  "short_name": "LSW",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#edf0ea",

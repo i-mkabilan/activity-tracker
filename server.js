@@ -13,6 +13,18 @@ const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BFg-HGhCoNz_FRRg3HJck-
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'gKL2m9xowYtMr_N2ulJzIYszLOPHiFiEGu7ZkOJIfbA';
 webpush.setVapidDetails('mailto:you@example.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
+app.post('/api/completions/bulk', (req, res) => {
+  const { activity_ids, date } = req.body;
+  const d = date || isoDate(new Date());
+  const upsert = db.prepare(`
+    INSERT INTO completions (activity_id, date, done)
+    VALUES (?, ?, 1)
+    ON CONFLICT(activity_id, date) DO UPDATE SET done = 1
+  `);
+  for (const id of (activity_ids || [])) upsert.run(id, d);
+  res.json({ ok: true, count: (activity_ids || []).length });
+});
+
 app.post('/api/subscribe', (req, res) => {
   const sub = req.body;
   db.prepare(`
@@ -23,11 +35,11 @@ app.post('/api/subscribe', (req, res) => {
   res.json({ ok: true });
 });
 
-async function sendPush(title, body, tag) {
+async function sendPush(title, body, tag, data) {
   const subs = db.prepare('SELECT * FROM push_subscriptions').all();
   for (const row of subs) {
     try {
-      await webpush.sendNotification(JSON.parse(row.subscription_json), JSON.stringify({ title, body, tag }));
+      await webpush.sendNotification(JSON.parse(row.subscription_json), JSON.stringify({ title, body, tag, data }));
     } catch (err) {
       if (err.statusCode === 404 || err.statusCode === 410) {
         db.prepare('DELETE FROM push_subscriptions WHERE id = ?').run(row.id);
@@ -88,6 +100,82 @@ function getSettings() {
   return out;
 }
 
+const { generateMonthlyReport } = require('./report');
+
+app.get('/api/report/monthly', (req, res) => {
+  const monthStr = req.query.month || new Date().toISOString().slice(0, 7); // YYYY-MM
+  const activities = db.prepare('SELECT * FROM activities WHERE archived = 0 ORDER BY tier, id').all();
+  const [year, monthNum] = monthStr.split('-').map(Number);
+  const from = `${monthStr}-01`;
+  const lastDay = new Date(year, monthNum, 0).getDate();
+  const to = `${monthStr}-${String(lastDay).padStart(2, '0')}`;
+  const completions = db.prepare('SELECT * FROM completions WHERE date >= ? AND date <= ?').all(from, to);
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="LSW-Report-${monthStr}.pdf"`);
+  generateMonthlyReport(res, { monthStr, activities, completions });
+});
+
+app.get('/api/history', (req, res) => {
+  const today = new Date();
+  const activities = db.prepare('SELECT * FROM activities WHERE archived = 0').all();
+  const dailyActs = activities.filter(a => a.tier === 'daily');
+  const weeklyActs = activities.filter(a => a.tier === 'weekly');
+  const monthlyActs = activities.filter(a => a.tier === 'monthly');
+
+  function isCompletedOn(id, d) {
+    return !!db.prepare('SELECT 1 FROM completions WHERE activity_id=? AND date=? AND done=1').get(id, d);
+  }
+  function isCompletedSince(id, since, until) {
+    return !!db.prepare('SELECT 1 FROM completions WHERE activity_id=? AND date>=? AND date<=? AND done=1').get(id, since, until);
+  }
+
+  // Last 14 days, daily completion
+  const daily = [];
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const dStr = isoDate(d);
+    const done = dailyActs.filter(a => isCompletedOn(a.id, dStr)).length;
+    daily.push({
+      label: i === 0 ? 'Today' : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+      done, total: dailyActs.length
+    });
+  }
+
+  // Last 4 weeks
+  const weekly = [];
+  for (let i = 0; i < 4; i++) {
+    const ref = new Date(today);
+    ref.setDate(ref.getDate() - i * 7);
+    const wStart = startOfWeek(ref);
+    const wEnd = new Date(wStart); wEnd.setDate(wEnd.getDate() + 6);
+    const wStartStr = isoDate(wStart);
+    const wEndStr = isoDate(wEnd < today ? wEnd : today);
+    const done = weeklyActs.filter(a => isCompletedSince(a.id, wStartStr, wEndStr)).length;
+    weekly.push({
+      label: i === 0 ? 'This week' : `Week of ${wStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`,
+      done, total: weeklyActs.length
+    });
+  }
+
+  // Last 3 months
+  const monthly = [];
+  for (let i = 0; i < 3; i++) {
+    const ref = new Date(today.getFullYear(), today.getMonth() - i, 1);
+    const mStart = isoDate(ref);
+    const mEndDate = new Date(ref.getFullYear(), ref.getMonth() + 1, 0);
+    const mEnd = isoDate(mEndDate < today ? mEndDate : today);
+    const done = monthlyActs.filter(a => isCompletedSince(a.id, mStart, mEnd)).length;
+    monthly.push({
+      label: i === 0 ? 'This month' : ref.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
+      done, total: monthlyActs.length
+    });
+  }
+
+  res.json({ daily, weekly, monthly });
+});
+
 app.get('/api/debug', (req, res) => {
   const activities = db.prepare('SELECT id, name, tier, reminder_time, fixed_day FROM activities WHERE archived = 0').all();
   const subs = db.prepare('SELECT id, endpoint, created_at FROM push_subscriptions').all();
@@ -108,7 +196,7 @@ cron.schedule('* * * * *', async () => {
     const pending = dailyActs.filter(a => a.reminder_time <= time && !isCompletedOn(a.id, date));
     if (pending.length) {
       const names = pending.map(a => a.name).join(', ');
-      await sendPush(`${pending.length} daily activities remaining`, names, 'daily-digest');
+      await sendPush(`${pending.length} daily activities remaining`, names, 'daily-digest', { ids: pending.map(a => a.id), date });
     }
     markDigestSent('daily', date, time);
   }

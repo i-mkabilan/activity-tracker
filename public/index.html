@@ -3,8 +3,11 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Standard Work Tracker</title>
+<title>Leadership Standard Work</title>
 <link rel="stylesheet" href="style.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
 <link rel="manifest" href="manifest.json" />
 <link rel="icon" href="icon-192.png" type="image/png" />
 <link rel="apple-touch-icon" href="icon-192.png" />
@@ -15,9 +18,9 @@
 <div class="frame">
 
   <header class="topbar">
-    <div class="mark">SW</div>
+    <div class="mark">LSW</div>
     <div class="topbar-text">
-      <p class="title">Standard Work Tracker</p>
+      <p class="title">Leadership Standard Work</p>
       <p class="date" id="todayLabel"></p>
     </div>
     <div class="streak" id="streakBadge">0-day streak</div>
@@ -33,10 +36,11 @@
     <button class="tier-btn active" data-tier="daily">Daily</button>
     <button class="tier-btn" data-tier="weekly">Weekly</button>
     <button class="tier-btn" data-tier="monthly">Monthly</button>
+    <button class="tier-btn" data-tier="history">History</button>
   </nav>
 
-  <main>
-    <section class="panel">
+  <main id="mainView">
+    <section class="panel" id="activityPanel">
       <div class="panel-head">
         <span class="panel-label" id="tierLabel">Today's routine</span>
         <span class="panel-count" id="tierCount">0 / 0 done</span>
@@ -46,7 +50,7 @@
       <button class="add-btn" id="addBtn">+ Add activity</button>
     </section>
 
-    <section class="panel analytics-panel">
+    <section class="panel analytics-panel" id="analyticsPanel">
       <div class="panel-head">
         <span class="panel-label">Time ledger</span>
         <span class="panel-count" id="timeLabel"></span>
@@ -76,6 +80,32 @@
       <div class="week-bars" id="weekBars"></div>
     </section>
   </main>
+
+  <section class="panel history-panel" id="historyPanel" style="display:none;">
+    <div class="panel-head">
+      <span class="panel-label">Past record</span>
+    </div>
+    <div id="historyDailyList" class="history-days"></div>
+
+    <div class="panel-head" style="margin-top:20px;">
+      <span class="panel-label">Weekly record</span>
+    </div>
+    <div id="historyWeeklyList" class="history-rows"></div>
+
+    <div class="panel-head" style="margin-top:20px;">
+      <span class="panel-label">Monthly record</span>
+    </div>
+    <div id="historyMonthlyList" class="history-rows"></div>
+
+    <div class="panel-head" style="margin-top:22px;">
+      <span class="panel-label">Monthly report</span>
+    </div>
+    <p class="tier-hint" style="margin-bottom:10px;">Download the LSW-format report for any month, with your actual completion record filled in.</p>
+    <div class="report-row">
+      <input type="month" id="reportMonth" />
+      <button class="btn-solid" id="downloadReportBtn">Download PDF</button>
+    </div>
+  </section>
 
 </div>
 
