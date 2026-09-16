@@ -1,3 +1,13 @@
+self.addEventListener('install', event => {
+  // Activate the new service worker as soon as it's installed, don't wait for old tabs to close
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', event => {
+  // Take control of any already-open pages immediately
+  event.waitUntil(self.clients.claim());
+});
+
 self.addEventListener('push', event => {
   let data = {};
   try { data = event.data.json(); } catch (e) { data = { title: 'Reminder', body: event.data ? event.data.text() : '' }; }

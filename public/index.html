@@ -46,6 +46,14 @@
         <span class="panel-count" id="tierCount">0 / 0 done</span>
       </div>
       <p class="tier-hint" id="tierHint"></p>
+      <div id="calendarSection" class="calendar-section" style="display:none;">
+        <div class="calendar-head">
+          <span class="calendar-label">📅 Today's calendar</span>
+          <button class="cal-disconnect" id="calDisconnectBtn" title="Disconnect">Disconnect</button>
+        </div>
+        <div id="calendarEvents" class="calendar-events"></div>
+      </div>
+      <button class="connect-cal-btn" id="connectCalBtn" style="display:none;">Connect Google Calendar</button>
       <div id="activityList" class="activity-list"></div>
       <button class="add-btn" id="addBtn">+ Add activity</button>
     </section>

@@ -6,7 +6,13 @@ const db = require('./db');
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    // Never cache HTML, the service worker, or the manifest — these must always be fresh
+    // so updates show up without needing an uninstall/reinstall.
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  }
+}));
 
 // ---- Push setup ----
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BFg-HGhCoNz_FRRg3HJck-NX7fPuThp2DqP5nQG4qKj8PUXteX8xAVBnEJeeWTVPXVCWzEslEneh28HoBf_ksNs';
@@ -74,6 +80,117 @@ function isCompletedSince(activityId, sinceStr, todayStr) {
     .get(activityId, sinceStr, todayStr);
 }
 
+
+const { google } = require('googleapis');
+
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI; // e.g. https://your-app.onrender.com/auth/google/callback
+
+function makeOAuthClient() {
+  return new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI);
+}
+
+const pendingStates = new Map(); // simple in-memory CSRF-state store (fine for single-instance use)
+
+app.get('/auth/google', (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REDIRECT_URI) {
+    return res.status(500).send('Google OAuth is not configured yet — missing environment variables.');
+  }
+  const oauth2Client = makeOAuthClient();
+  const state = Math.random().toString(36).slice(2);
+  pendingStates.set(state, Date.now());
+
+  const url = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent',
+    scope: [
+      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/userinfo.email',
+    ],
+    state,
+  });
+  res.redirect(url);
+});
+
+app.get('/auth/google/callback', async (req, res) => {
+  const { code, state } = req.query;
+  if (!state || !pendingStates.has(state)) {
+    return res.status(400).send('Invalid or expired login attempt. Please try connecting again.');
+  }
+  pendingStates.delete(state);
+
+  try {
+    const oauth2Client = makeOAuthClient();
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+
+    const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
+    const { data: userInfo } = await oauth2.userinfo.get();
+
+    db.prepare(`
+      INSERT INTO google_tokens (id, email, access_token, refresh_token, expiry_date)
+      VALUES (1, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        email = ?, access_token = ?,
+        refresh_token = COALESCE(?, google_tokens.refresh_token),
+        expiry_date = ?
+    `).run(
+      userInfo.email, tokens.access_token, tokens.refresh_token, tokens.expiry_date,
+      userInfo.email, tokens.access_token, tokens.refresh_token, tokens.expiry_date
+    );
+
+    res.redirect('/?calendar=connected');
+  } catch (err) {
+    console.error('Google OAuth error:', err.message);
+    res.status(500).send('Something went wrong connecting your Google account. Please try again.');
+  }
+});
+
+app.get('/api/calendar/status', (req, res) => {
+  const row = db.prepare('SELECT email FROM google_tokens WHERE id = 1').get();
+  res.json({ connected: !!row, email: row ? row.email : null });
+});
+
+app.post('/api/calendar/disconnect', (req, res) => {
+  db.prepare('DELETE FROM google_tokens WHERE id = 1').run();
+  res.json({ ok: true });
+});
+
+app.get('/api/calendar/today', async (req, res) => {
+  const row = db.prepare('SELECT * FROM google_tokens WHERE id = 1').get();
+  if (!row || !row.refresh_token) return res.json({ connected: false, events: [] });
+
+  try {
+    const oauth2Client = makeOAuthClient();
+    oauth2Client.setCredentials({ refresh_token: row.refresh_token });
+
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+
+    const result = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: startOfDay.toISOString(),
+      timeMax: endOfDay.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+    });
+
+    const events = (result.data.items || []).map(e => ({
+      summary: e.summary || '(no title)',
+      start: e.start.dateTime || e.start.date,
+      end: e.end.dateTime || e.end.date,
+      allDay: !e.start.dateTime,
+    }));
+
+    res.json({ connected: true, events });
+  } catch (err) {
+    console.error('Calendar fetch error:', err.message);
+    res.status(500).json({ connected: true, events: [], error: 'Could not fetch calendar events.' });
+  }
+});
 
 app.get('/api/settings', (req, res) => {
   const rows = db.prepare('SELECT * FROM settings').all();

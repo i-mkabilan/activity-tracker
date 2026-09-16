@@ -52,6 +52,14 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS google_tokens (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    email TEXT,
+    access_token TEXT,
+    refresh_token TEXT,
+    expiry_date INTEGER
+  );
 `);
 
 const defaultSettings = {

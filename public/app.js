@@ -27,6 +27,7 @@ document.querySelectorAll('.tier-btn').forEach(btn => {
     document.getElementById('tierHint').textContent =
       currentTier === 'daily' ? '' : 'Notification times for this tier are set in ⚙ Settings, not per activity.';
     loadActivities();
+    loadCalendar();
   });
 });
 
@@ -199,6 +200,49 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
 
 loadActivities();
 loadAnalytics();
+loadCalendar();
+
+// ---- Google Calendar integration ----
+async function loadCalendar() {
+  if (currentTier !== 'daily') return;
+  const status = await fetch('/api/calendar/status').then(r => r.json());
+
+  if (!status.connected) {
+    document.getElementById('connectCalBtn').style.display = 'block';
+    document.getElementById('calendarSection').style.display = 'none';
+    return;
+  }
+
+  document.getElementById('connectCalBtn').style.display = 'none';
+  document.getElementById('calendarSection').style.display = 'block';
+
+  const data = await fetch('/api/calendar/today').then(r => r.json());
+  const list = document.getElementById('calendarEvents');
+
+  if (!data.events || data.events.length === 0) {
+    list.innerHTML = '<div class="empty">No meetings today — open day ahead.</div>';
+    return;
+  }
+
+  list.innerHTML = data.events.map(e => {
+    const timeLabel = e.allDay ? 'All day' : new Date(e.start).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    return `
+      <div class="cal-event">
+        <span class="cal-event-time">${timeLabel}</span>
+        <span class="cal-event-name">${e.summary}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+document.getElementById('connectCalBtn').addEventListener('click', () => {
+  window.location.href = '/auth/google';
+});
+
+document.getElementById('calDisconnectBtn').addEventListener('click', async () => {
+  await fetch('/api/calendar/disconnect', { method: 'POST' });
+  loadCalendar();
+});
 
 // ---- Push notifications ----
 const VAPID_PUBLIC_KEY = 'BFg-HGhCoNz_FRRg3HJck-NX7fPuThp2DqP5nQG4qKj8PUXteX8xAVBnEJeeWTVPXVCWzEslEneh28HoBf_ksNs';
@@ -213,7 +257,17 @@ function urlBase64ToUint8Array(base64String) {
 async function initPush() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
 
+  // Reload once when a new service worker version takes over, so updates
+  // show up automatically without needing an uninstall/reinstall.
+  let refreshed = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshed) return;
+    refreshed = true;
+    window.location.reload();
+  });
+
   const reg = await navigator.serviceWorker.register('/sw.js');
+  reg.update(); // check for a newer sw.js right away
   const existing = await reg.pushManager.getSubscription();
 
   if (existing) return; // already subscribed
