@@ -60,6 +60,20 @@ db.exec(`
     refresh_token TEXT,
     expiry_date INTEGER
   );
+
+  CREATE TABLE IF NOT EXISTS scheduled_slots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    activity_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'auto',
+    status TEXT NOT NULL DEFAULT 'planned',
+    google_task_id TEXT,
+    suppress_app_reminder INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(activity_id, date),
+    FOREIGN KEY(activity_id) REFERENCES activities(id)
+  );
 `);
 
 const defaultSettings = {
@@ -68,6 +82,10 @@ const defaultSettings = {
   monthly_time_1: '10:15',
   monthly_time_2: '16:15',
   eod_time: '18:00',
+  work_start: '09:00',
+  work_end: '18:00',
+  work_midpoint: '13:00',
+  work_days: 'Mon,Tue,Wed,Thu,Fri',
 };
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
 for (const [k, v] of Object.entries(defaultSettings)) insertSetting.run(k, v);

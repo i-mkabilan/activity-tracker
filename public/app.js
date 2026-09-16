@@ -12,20 +12,27 @@ document.querySelectorAll('.tier-btn').forEach(btn => {
     btn.classList.add('active');
     currentTier = btn.dataset.tier;
 
+    document.getElementById('mainView').style.display = 'none';
+    document.getElementById('historyPanel').style.display = 'none';
+    document.getElementById('planPanel').style.display = 'none';
+
     if (currentTier === 'history') {
-      document.getElementById('mainView').style.display = 'none';
       document.getElementById('historyPanel').style.display = 'block';
       loadHistory();
       return;
     }
+    if (currentTier === 'plan') {
+      document.getElementById('planPanel').style.display = 'block';
+      loadPlan();
+      return;
+    }
     document.getElementById('mainView').style.display = '';
-    document.getElementById('historyPanel').style.display = 'none';
 
     document.getElementById('tierLabel').textContent =
       currentTier === 'daily' ? "Today's routine" :
       currentTier === 'weekly' ? "This week" : "This month";
     document.getElementById('tierHint').textContent =
-      currentTier === 'daily' ? '' : 'Notification times for this tier are set in ⚙ Settings, not per activity.';
+      currentTier === 'daily' ? '' : 'Notification times for this tier are set in Settings, not per activity.';
     loadActivities();
     loadCalendar();
   });
@@ -102,7 +109,7 @@ async function loadActivities() {
         <p class="act-meta">${metaParts.join(' · ')}</p>
       </div>
       ${a.fixed_day ? `<span class="tag">${a.fixed_day}</span>` : ''}
-      ${a.tier === 'daily' ? `<button class="edit-time" data-edit="${a.id}" data-name="${a.name.replace(/"/g, '&quot;')}" data-time="${a.reminder_time || ''}" title="Edit reminder time">⏰</button>` : ''}
+      ${a.tier === 'daily' ? `<button class="edit-time" data-edit="${a.id}" data-name="${a.name.replace(/"/g, '&quot;')}" data-time="${a.reminder_time || ''}" title="Edit reminder time"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 16 14"></polyline></svg></button>` : ''}
       <button class="del" data-del="${a.id}">&times;</button>
     `;
     list.appendChild(row);
@@ -210,11 +217,13 @@ async function loadCalendar() {
   if (!status.connected) {
     document.getElementById('connectCalBtn').style.display = 'block';
     document.getElementById('calendarSection').style.display = 'none';
+    document.getElementById('tasksReconnectBanner').style.display = 'none';
     return;
   }
 
   document.getElementById('connectCalBtn').style.display = 'none';
   document.getElementById('calendarSection').style.display = 'block';
+  document.getElementById('tasksReconnectBanner').style.display = status.tasksEnabled ? 'none' : 'flex';
 
   const data = await fetch('/api/calendar/today').then(r => r.json());
   const list = document.getElementById('calendarEvents');
@@ -242,6 +251,117 @@ document.getElementById('connectCalBtn').addEventListener('click', () => {
 document.getElementById('calDisconnectBtn').addEventListener('click', async () => {
   await fetch('/api/calendar/disconnect', { method: 'POST' });
   loadCalendar();
+});
+
+document.getElementById('tasksReconnectBtn').addEventListener('click', () => {
+  window.location.href = '/auth/google';
+});
+
+// ---- Auto-scheduling (Week plan) ----
+let planWeekStart = null; // YYYY-MM-DD, always a Monday; null = current week
+
+// Calendar-date-only arithmetic, UTC-anchored so it never shifts across the
+// viewer's local timezone (a local-time Date round-tripped through
+// toISOString() can land on the wrong calendar day for UTC+ timezones).
+function pad2(n) { return String(n).padStart(2, '0'); }
+function fmtDateStr(d) { return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`; }
+
+function mondayOf(d) {
+  const date = d instanceof Date ? d : new Date(d);
+  const utc = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const day = utc.getUTCDay();
+  utc.setUTCDate(utc.getUTCDate() + (day === 0 ? -6 : 1) - day);
+  return fmtDateStr(utc);
+}
+
+function addDaysStr(dateStr, n) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const utc = new Date(Date.UTC(y, m - 1, d));
+  utc.setUTCDate(utc.getUTCDate() + n);
+  return fmtDateStr(utc);
+}
+
+async function loadPlan() {
+  if (currentTier !== 'plan') return;
+  const weekStart = planWeekStart || mondayOf(new Date());
+  planWeekStart = weekStart;
+
+  const data = await fetch(`/api/schedule/week?weekStart=${weekStart}`).then(r => r.json());
+  const container = document.getElementById('planDays');
+
+  if (data.error) {
+    container.innerHTML = `<div class="empty">${data.error}</div>`;
+    return;
+  }
+
+  const rangeLabel = `${new Date(weekStart + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${new Date(data.weekEnd + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+  document.getElementById('planRange').textContent = rangeLabel;
+
+  const byDate = {};
+  (data.slots || []).forEach(s => { (byDate[s.date] = byDate[s.date] || []).push(s); });
+
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const ds = addDaysStr(weekStart, i);
+    days.push(ds);
+  }
+
+  container.innerHTML = days.map(ds => {
+    const slots = (byDate[ds] || []).slice().sort((a, b) => a.start_time.localeCompare(b.start_time));
+    const dayLabel = new Date(ds + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    const rows = slots.length
+      ? slots.map(s => `
+          <div class="plan-row">
+            <span class="plan-row-time">${s.start_time}–${s.end_time}</span>
+            <span class="plan-row-name">${s.activity_name || '(deleted activity)'}</span>
+            ${s.status === 'pushed'
+              ? '<span class="tag">Pushed</span>'
+              : `<button class="plan-push-btn" data-push="${s.id}">Push to Calendar</button>`}
+          </div>
+        `).join('')
+      : '<div class="empty">Nothing planned.</div>';
+    return `
+      <div class="plan-day">
+        <div class="plan-day-label">${dayLabel}</div>
+        ${rows}
+      </div>
+    `;
+  }).join('');
+
+  container.querySelectorAll('[data-push]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.textContent = 'Pushing…';
+      const res = await fetch(`/api/schedule/${btn.dataset.push}/push`, { method: 'POST' }).then(r => r.json());
+      if (res.error) {
+        alert(res.error);
+        btn.disabled = false;
+        btn.textContent = 'Push to Calendar';
+        return;
+      }
+      loadPlan();
+    });
+  });
+}
+
+document.getElementById('planRegenBtn').addEventListener('click', async () => {
+  const weekStart = planWeekStart || mondayOf(new Date());
+  await fetch('/api/schedule/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ weekStart })
+  });
+  loadPlan();
+});
+
+document.getElementById('planPrevBtn').addEventListener('click', () => {
+  planWeekStart = addDaysStr(planWeekStart || mondayOf(new Date()), -7);
+  loadPlan();
+});
+
+document.getElementById('planNextBtn').addEventListener('click', () => {
+  planWeekStart = addDaysStr(planWeekStart || mondayOf(new Date()), 7);
+  loadPlan();
 });
 
 // ---- Push notifications ----
@@ -335,6 +455,10 @@ document.getElementById('settingsBtn').addEventListener('click', async () => {
   document.getElementById('setMonthly1').value = s.monthly_time_1 || '';
   document.getElementById('setMonthly2').value = s.monthly_time_2 || '';
   document.getElementById('setEod').value = s.eod_time || '';
+  document.getElementById('setWorkStart').value = s.work_start || '';
+  document.getElementById('setWorkEnd').value = s.work_end || '';
+  document.getElementById('setWorkMidpoint').value = s.work_midpoint || '';
+  document.getElementById('setWorkDays').value = s.work_days || '';
   settingsBackdrop.classList.add('open');
 });
 
@@ -349,6 +473,10 @@ document.getElementById('settingsSaveBtn').addEventListener('click', async () =>
     monthly_time_1: document.getElementById('setMonthly1').value,
     monthly_time_2: document.getElementById('setMonthly2').value,
     eod_time: document.getElementById('setEod').value,
+    work_start: document.getElementById('setWorkStart').value,
+    work_end: document.getElementById('setWorkEnd').value,
+    work_midpoint: document.getElementById('setWorkMidpoint').value,
+    work_days: document.getElementById('setWorkDays').value,
   };
   await fetch('/api/settings', {
     method: 'POST',
