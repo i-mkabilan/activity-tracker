@@ -173,6 +173,7 @@ app.get('/api/calendar/status', async (req, res) => {
       tasksEnabled = true;
     } catch (err) {
       tasksEnabled = false;
+      console.error('Tasks scope check failed:', err.message);
     }
   }
   res.json({ connected: true, email: row.email, tasksEnabled });
