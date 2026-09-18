@@ -100,10 +100,6 @@ function getAuthorizedClient() {
   return oauth2Client;
 }
 
-function getTasksClient(auth) {
-  return google.tasks({ version: 'v1', auth });
-}
-
 const pendingStates = new Map(); // simple in-memory CSRF-state store (fine for single-instance use)
 
 app.get('/auth/google', (req, res) => {
@@ -119,7 +115,6 @@ app.get('/auth/google', (req, res) => {
     prompt: 'consent',
     scope: [
       'https://www.googleapis.com/auth/calendar.readonly',
-      'https://www.googleapis.com/auth/tasks',
       'https://www.googleapis.com/auth/userinfo.email',
     ],
     state,
@@ -161,22 +156,9 @@ app.get('/auth/google/callback', async (req, res) => {
   }
 });
 
-app.get('/api/calendar/status', async (req, res) => {
+app.get('/api/calendar/status', (req, res) => {
   const row = db.prepare('SELECT email FROM google_tokens WHERE id = 1').get();
-  if (!row) return res.json({ connected: false, email: null, tasksEnabled: false });
-
-  let tasksEnabled = false;
-  const auth = getAuthorizedClient();
-  if (auth) {
-    try {
-      await getTasksClient(auth).tasklists.list({ maxResults: 1 });
-      tasksEnabled = true;
-    } catch (err) {
-      tasksEnabled = false;
-      console.error('Tasks scope check failed:', err.message);
-    }
-  }
-  res.json({ connected: true, email: row.email, tasksEnabled });
+  res.json({ connected: !!row, email: row ? row.email : null });
 });
 
 app.post('/api/calendar/disconnect', (req, res) => {
@@ -259,7 +241,7 @@ function getSettings() {
   return out;
 }
 
-// ---- Auto-scheduling ----
+// ---- Auto-scheduling: suggest calendar-aware slots for flexible weekly/monthly tasks ----
 function mondayOf(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
@@ -267,8 +249,13 @@ function mondayOf(dateStr) {
   dt.setUTCDate(dt.getUTCDate() + (day === 0 ? -6 : 1) - day);
   return dt.toISOString().slice(0, 10);
 }
+function nextMonthKey(monthKey) {
+  const [y, m] = monthKey.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m, 1)); // m is 1-indexed, so this lands on the 1st of next month
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
 
-async function generateAndPersistWeek(weekStart) {
+async function generateWeeklySuggestions(weekStart) {
   const weekEnd = scheduler.addDays(weekStart, 6);
   const auth = getAuthorizedClient();
   let calendarEvents = [];
@@ -284,42 +271,70 @@ async function generateAndPersistWeek(weekStart) {
   const completions = db.prepare('SELECT activity_id, date, done FROM completions').all();
   const settings = getSettings();
   const today = isoDate(new Date());
+  const alreadyAccepted = db.prepare("SELECT * FROM scheduled_slots WHERE date BETWEEN ? AND ? AND status = 'accepted'").all(weekStart, weekEnd);
 
-  const { placed, unscheduled } = scheduler.buildWeekPlan({ activities, completions, calendarEvents, weekStart, today, settings });
+  const { placed, unscheduled } = scheduler.buildWeeklySuggestions({ activities, completions, calendarEvents, alreadyAccepted, weekStart, today, settings });
 
-  const pushedRows = db.prepare("SELECT activity_id, date FROM scheduled_slots WHERE date BETWEEN ? AND ? AND status = 'pushed'").all(weekStart, weekEnd);
-  const pushedSet = new Set(pushedRows.map(r => `${r.activity_id}|${r.date}`));
-
-  const upsert = db.prepare(`
-    INSERT INTO scheduled_slots (activity_id, date, start_time, end_time, source)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(activity_id, date) DO UPDATE SET start_time = excluded.start_time, end_time = excluded.end_time, source = excluded.source
-  `);
-  const tx = db.transaction(rows => {
-    for (const r of rows) {
-      if (pushedSet.has(`${r.activity_id}|${r.date}`)) continue; // a pushed/committed slot isn't silently moved by a regenerate
-      upsert.run(r.activity_id, r.date, r.start_time, r.end_time, r.source);
+  const flexibleIds = activities.filter(a => a.tier === 'weekly' && !a.fixed_day).map(a => a.id);
+  const tx = db.transaction(() => {
+    if (flexibleIds.length) {
+      const placeholders = flexibleIds.map(() => '?').join(',');
+      db.prepare(`DELETE FROM scheduled_slots WHERE status != 'accepted' AND activity_id IN (${placeholders})`).run(...flexibleIds);
     }
+    const insert = db.prepare(`INSERT INTO scheduled_slots (activity_id, date, start_time, end_time, source, status) VALUES (?, ?, ?, ?, 'auto', 'suggested')`);
+    for (const r of placed) insert.run(r.activity_id, r.date, r.start_time, r.end_time);
   });
-  tx(placed);
+  tx();
 
   return { weekEnd, unscheduled };
+}
+
+async function generateMonthlySuggestions(monthKey) {
+  const monthStart = `${monthKey}-01`;
+  const monthEnd = `${monthKey}-${String(scheduler.daysInMonth(monthKey)).padStart(2, '0')}`;
+  const auth = getAuthorizedClient();
+  let calendarEvents = [];
+  if (auth) {
+    try {
+      calendarEvents = await fetchCalendarEvents(auth, monthStart, monthEnd);
+    } catch (err) {
+      console.error('Schedule calendar fetch error:', err.message);
+    }
+  }
+
+  const activities = db.prepare('SELECT * FROM activities WHERE archived = 0').all();
+  const completions = db.prepare('SELECT activity_id, date, done FROM completions').all();
+  const settings = getSettings();
+  const today = isoDate(new Date());
+  const alreadyAccepted = db.prepare("SELECT * FROM scheduled_slots WHERE date BETWEEN ? AND ? AND status = 'accepted'").all(monthStart, monthEnd);
+
+  const { placed, unscheduled } = scheduler.buildMonthlySuggestions({ activities, completions, calendarEvents, alreadyAccepted, monthKey, today, settings });
+
+  const flexibleIds = activities.filter(a => a.tier === 'monthly' && !a.fixed_day).map(a => a.id);
+  const tx = db.transaction(() => {
+    if (flexibleIds.length) {
+      const placeholders = flexibleIds.map(() => '?').join(',');
+      db.prepare(`DELETE FROM scheduled_slots WHERE status != 'accepted' AND activity_id IN (${placeholders})`).run(...flexibleIds);
+    }
+    const insert = db.prepare(`INSERT INTO scheduled_slots (activity_id, date, start_time, end_time, source, status) VALUES (?, ?, ?, ?, 'auto', 'suggested')`);
+    for (const r of placed) insert.run(r.activity_id, r.date, r.start_time, r.end_time);
+  });
+  tx();
+
+  return { monthStart, monthEnd, unscheduled };
 }
 
 app.get('/api/schedule/week', async (req, res) => {
   try {
     const weekStart = mondayOf(req.query.weekStart || isoDate(new Date()));
     const weekEnd = scheduler.addDays(weekStart, 6);
-    let rows = db.prepare('SELECT * FROM scheduled_slots WHERE date BETWEEN ? AND ?').all(weekStart, weekEnd);
-    if (rows.length === 0) {
-      await generateAndPersistWeek(weekStart);
-      rows = db.prepare('SELECT * FROM scheduled_slots WHERE date BETWEEN ? AND ?').all(weekStart, weekEnd);
-    }
+    await generateWeeklySuggestions(weekStart);
 
     const actMap = {};
     db.prepare('SELECT * FROM activities').all().forEach(a => actMap[a.id] = a);
-    const slots = rows
+    const slots = db.prepare('SELECT * FROM scheduled_slots WHERE date BETWEEN ? AND ?').all(weekStart, weekEnd)
       .map(r => ({ ...r, activity_name: actMap[r.activity_id]?.name, tier: actMap[r.activity_id]?.tier }))
+      .filter(s => s.tier === 'weekly')
       .sort((a, b) => (a.date === b.date ? a.start_time.localeCompare(b.start_time) : a.date.localeCompare(b.date)));
 
     res.json({ weekStart, weekEnd, slots });
@@ -329,58 +344,48 @@ app.get('/api/schedule/week', async (req, res) => {
   }
 });
 
-app.post('/api/schedule/generate', async (req, res) => {
+app.get('/api/schedule/month', async (req, res) => {
   try {
-    const weekStart = mondayOf((req.body && req.body.weekStart) || isoDate(new Date()));
-    const result = await generateAndPersistWeek(weekStart);
-    res.json({ ok: true, weekStart, ...result });
+    const monthKey = req.query.month || isoDate(new Date()).slice(0, 7);
+    const { monthStart, monthEnd } = await generateMonthlySuggestions(monthKey);
+
+    const actMap = {};
+    db.prepare('SELECT * FROM activities').all().forEach(a => actMap[a.id] = a);
+    const slots = db.prepare('SELECT * FROM scheduled_slots WHERE date BETWEEN ? AND ?').all(monthStart, monthEnd)
+      .map(r => ({ ...r, activity_name: actMap[r.activity_id]?.name, tier: actMap[r.activity_id]?.tier }))
+      .filter(s => s.tier === 'monthly')
+      .sort((a, b) => (a.date === b.date ? a.start_time.localeCompare(b.start_time) : a.date.localeCompare(b.date)));
+
+    res.json({ monthKey, monthStart, monthEnd, slots });
   } catch (err) {
-    console.error('Schedule generate error:', err.message);
-    res.status(500).json({ error: 'Could not generate the week plan.' });
+    console.error('Schedule month error:', err.message);
+    res.status(500).json({ error: 'Could not build the month plan.' });
   }
 });
 
-app.post('/api/schedule/:id/push', async (req, res) => {
-  const slot = db.prepare('SELECT * FROM scheduled_slots WHERE id = ?').get(req.params.id);
-  if (!slot) return res.status(404).json({ error: 'not found' });
-  const activity = db.prepare('SELECT * FROM activities WHERE id = ?').get(slot.activity_id);
-  const auth = getAuthorizedClient();
-  if (!auth) return res.status(400).json({ error: 'Google Calendar is not connected.' });
-
+// Accepts a suggested slot as-is, or commits a hand-picked time (optionally for a
+// previously-unscheduled task) — keyed by activity_id+date, matching the table's UNIQUE constraint.
+app.post('/api/schedule/accept', (req, res) => {
+  const { activity_id, date, start_time, end_time, manual } = req.body || {};
+  if (!activity_id || !date || !start_time || !end_time) {
+    return res.status(400).json({ error: 'activity_id, date, start_time and end_time are required' });
+  }
   try {
-    const tasks = getTasksClient(auth);
-    const dueIso = new Date(`${slot.date}T${slot.start_time}:00`).toISOString();
-    const result = await tasks.tasks.insert({ tasklist: '@default', requestBody: { title: activity.name, due: dueIso } });
-    db.prepare("UPDATE scheduled_slots SET status = 'pushed', google_task_id = ?, suppress_app_reminder = 1 WHERE id = ?")
-      .run(result.data.id, slot.id);
-    res.json({ ok: true, google_task_id: result.data.id });
+    const tx = db.transaction(() => {
+      // A weekly/monthly task has at most one live slot at a time — clear any other stale row for it.
+      db.prepare('DELETE FROM scheduled_slots WHERE activity_id = ? AND date != ?').run(activity_id, date);
+      db.prepare(`
+        INSERT INTO scheduled_slots (activity_id, date, start_time, end_time, source, status)
+        VALUES (?, ?, ?, ?, ?, 'accepted')
+        ON CONFLICT(activity_id, date) DO UPDATE SET start_time = excluded.start_time, end_time = excluded.end_time, source = excluded.source, status = 'accepted'
+      `).run(activity_id, date, start_time, end_time, manual ? 'manual' : 'auto');
+    });
+    tx();
+    res.json({ ok: true });
   } catch (err) {
-    console.error('Push to Google Tasks error:', err.message);
-    res.status(500).json({ error: 'Could not push to Google Tasks. You may need to reconnect Google Calendar to grant task access.' });
+    console.error('Accept slot error:', err.message);
+    res.status(500).json({ error: 'Could not save that time slot.' });
   }
-});
-
-app.post('/api/schedule/:id/complete', async (req, res) => {
-  const slot = db.prepare('SELECT * FROM scheduled_slots WHERE id = ?').get(req.params.id);
-  if (!slot) return res.status(404).json({ error: 'not found' });
-
-  db.prepare(`
-    INSERT INTO completions (activity_id, date, done)
-    VALUES (?, ?, 1)
-    ON CONFLICT(activity_id, date) DO UPDATE SET done = 1
-  `).run(slot.activity_id, slot.date);
-
-  if (slot.google_task_id) {
-    const auth = getAuthorizedClient();
-    if (auth) {
-      try {
-        await getTasksClient(auth).tasks.patch({ tasklist: '@default', task: slot.google_task_id, requestBody: { status: 'completed' } });
-      } catch (err) {
-        console.error('Complete Google Task error:', err.message);
-      }
-    }
-  }
-  res.json({ ok: true });
 });
 
 const { generateMonthlyReport } = require('./report');
@@ -465,19 +470,21 @@ app.get('/api/debug', (req, res) => {
   res.json({ serverTimeNow: nowParts(), activities, subscriptionCount: subs.length, subscriptions: subs });
 });
 
-async function revalidateWeek(todayStr) {
+// If a newly-added calendar meeting collides with an already-accepted slot, move it
+// to the next free gap and let the user know. Unaccepted suggestions aren't a
+// commitment yet, so they're simply recomputed fresh next time their tab loads.
+async function revalidateAcceptedSlots(todayStr) {
   const auth = getAuthorizedClient();
   if (!auth) return;
 
-  const weekStart = mondayOf(todayStr);
-  const weekEnd = scheduler.addDays(weekStart, 6);
-  const calendarEvents = await fetchCalendarEvents(auth, weekStart, weekEnd);
+  const rangeEnd = scheduler.addDays(todayStr, 45); // covers the current week and month at once
+  const calendarEvents = await fetchCalendarEvents(auth, todayStr, rangeEnd);
 
   const settings = getSettings();
   const workStart = scheduler.toMinutes(settings.work_start || '09:00');
   const workEnd = scheduler.toMinutes(settings.work_end || '18:00');
 
-  const rows = db.prepare('SELECT * FROM scheduled_slots WHERE date BETWEEN ? AND ? ORDER BY date, start_time').all(todayStr, weekEnd);
+  const rows = db.prepare("SELECT * FROM scheduled_slots WHERE status = 'accepted' AND date BETWEEN ? AND ? ORDER BY date, start_time").all(todayStr, rangeEnd);
   const byDate = {};
   for (const r of rows) (byDate[r.date] = byDate[r.date] || []).push(r);
 
@@ -494,7 +501,7 @@ async function revalidateWeek(todayStr) {
       const others = dayRows.filter(r => r.id !== slot.id).map(r => ({ start: scheduler.toMinutes(r.start_time), end: scheduler.toMinutes(r.end_time) }));
       const merged = [...busyFromCalendar, ...others].sort((a, b) => a.start - b.start);
       const gaps = scheduler.freeGaps(merged, workStart, workEnd);
-      const hit = scheduler.fitInGaps(gaps, slotEnd - slotStart, null);
+      const hit = scheduler.fitInGaps(gaps, slotEnd - slotStart);
       if (!hit) continue;
 
       db.prepare('UPDATE scheduled_slots SET start_time = ?, end_time = ? WHERE id = ?')
@@ -504,25 +511,6 @@ async function revalidateWeek(todayStr) {
 
       const activity = db.prepare('SELECT name FROM activities WHERE id = ?').get(slot.activity_id);
       await sendPush('Rescheduled', `${activity ? activity.name : 'A task'} moved to ${slot.start_time} on ${dateStr} — a new meeting was added.`, 'reschedule');
-    }
-  }
-
-  const pushed = db.prepare("SELECT * FROM scheduled_slots WHERE status = 'pushed' AND google_task_id IS NOT NULL AND date BETWEEN ? AND ?").all(weekStart, weekEnd);
-  if (pushed.length) {
-    const tasks = getTasksClient(auth);
-    for (const slot of pushed) {
-      try {
-        const result = await tasks.tasks.get({ tasklist: '@default', task: slot.google_task_id });
-        if (result.data.status === 'completed' && !isCompletedOn(slot.activity_id, slot.date)) {
-          db.prepare(`
-            INSERT INTO completions (activity_id, date, done)
-            VALUES (?, ?, 1)
-            ON CONFLICT(activity_id, date) DO UPDATE SET done = 1
-          `).run(slot.activity_id, slot.date);
-        }
-      } catch (err) {
-        console.error('Google Task poll error:', err.message);
-      }
     }
   }
 }
@@ -538,10 +526,7 @@ cron.schedule('* * * * *', async () => {
   const distinctDailyTimes = [...new Set(dailyActs.map(a => a.reminder_time))];
 
   if (distinctDailyTimes.includes(time) && !digestSent('daily', date, time)) {
-    const suppressedToday = new Set(
-      db.prepare('SELECT activity_id FROM scheduled_slots WHERE date = ? AND suppress_app_reminder = 1').all(date).map(r => r.activity_id)
-    );
-    const pending = dailyActs.filter(a => a.reminder_time <= time && !isCompletedOn(a.id, date) && !suppressedToday.has(a.id));
+    const pending = dailyActs.filter(a => a.reminder_time <= time && !isCompletedOn(a.id, date));
     if (pending.length) {
       const names = pending.map(a => a.name).join(', ');
       await sendPush(`${pending.length} daily activities remaining`, names, 'daily-digest', { ids: pending.map(a => a.id), date });
@@ -587,10 +572,51 @@ cron.schedule('* * * * *', async () => {
     markDigestSent('eod', date, time);
   }
 
-  // ---- Every 15 min: re-validate the plan against the live calendar, poll pushed Google Tasks for completion ----
+  // ---- Accepted weekly/monthly slot reminders: fire right at the committed time ----
+  const dueSlots = db.prepare("SELECT * FROM scheduled_slots WHERE status = 'accepted' AND date = ? AND start_time = ?").all(date, time);
+  for (const slot of dueSlots) {
+    if (digestSent('slot-reminder', date, String(slot.id))) continue;
+    const activity = db.prepare('SELECT name FROM activities WHERE id = ?').get(slot.activity_id);
+    await sendPush(activity ? activity.name : 'Scheduled task', `Time for your ${slot.start_time}-${slot.end_time} slot`, 'slot-reminder');
+    markDigestSent('slot-reminder', date, String(slot.id));
+  }
+
+  // ---- Weekend nudge: plan next week's flexible weekly tasks ----
+  const isWeekend = ['Sat', 'Sun'].includes(nowParts().day);
+  if (isWeekend && time === settings.week_planning_time && !digestSent('week-planning', date, time)) {
+    const nextWeekStart = scheduler.addDays(mondayOf(date), 7);
+    const nextWeekEnd = scheduler.addDays(nextWeekStart, 6);
+    const acceptedIds = new Set(
+      db.prepare("SELECT activity_id FROM scheduled_slots WHERE status = 'accepted' AND date BETWEEN ? AND ?").all(nextWeekStart, nextWeekEnd).map(r => r.activity_id)
+    );
+    const needsPlanning = activities.filter(a => a.tier === 'weekly' && !a.fixed_day && !acceptedIds.has(a.id) && !isCompletedSince(a.id, nextWeekStart, nextWeekEnd));
+    if (needsPlanning.length) {
+      await sendPush('Plan next week', `${needsPlanning.length} weekly task${needsPlanning.length === 1 ? '' : 's'} need a time slot — open Weekly to review suggestions.`, 'week-planning');
+    }
+    markDigestSent('week-planning', date, time);
+  }
+
+  // ---- Month-end nudge: plan next month's flexible monthly tasks ----
+  const thisMonthKey = date.slice(0, 7);
+  const isLastWeekendOfMonth = date === scheduler.lastWeekdayOfMonth(thisMonthKey, 6) || date === scheduler.lastWeekdayOfMonth(thisMonthKey, 0);
+  if (isLastWeekendOfMonth && time === settings.month_planning_time && !digestSent('month-planning', date, time)) {
+    const nextMonth = nextMonthKey(thisMonthKey);
+    const nextMonthStart = `${nextMonth}-01`;
+    const nextMonthEnd = `${nextMonth}-${String(scheduler.daysInMonth(nextMonth)).padStart(2, '0')}`;
+    const acceptedIds = new Set(
+      db.prepare("SELECT activity_id FROM scheduled_slots WHERE status = 'accepted' AND date BETWEEN ? AND ?").all(nextMonthStart, nextMonthEnd).map(r => r.activity_id)
+    );
+    const needsPlanning = activities.filter(a => a.tier === 'monthly' && !a.fixed_day && !acceptedIds.has(a.id) && !isCompletedSince(a.id, nextMonthStart, nextMonthEnd));
+    if (needsPlanning.length) {
+      await sendPush('Plan next month', `${needsPlanning.length} monthly task${needsPlanning.length === 1 ? '' : 's'} need a time slot — open Monthly to review suggestions.`, 'month-planning');
+    }
+    markDigestSent('month-planning', date, time);
+  }
+
+  // ---- Every 15 min: re-validate accepted slots against the live calendar ----
   if (Number(time.slice(3)) % 15 === 0) {
     try {
-      await revalidateWeek(date);
+      await revalidateAcceptedSlots(date);
     } catch (err) {
       console.error('Schedule revalidation error:', err.message);
     }
@@ -682,19 +708,40 @@ app.get('/api/analytics', (req, res) => {
     compMap[c.activity_id][c.date] = c;
   }
 
+  function completionFor(a, sinceStr) {
+    return compMap[a.id]?.[todayStr] || Object.values(compMap[a.id] || {}).find(x => x.date >= sinceStr);
+  }
+
   function statsFor(tier, sinceStr) {
     const acts = activities.filter(a => a.tier === tier);
     let totalAllotted = 0, totalActual = 0, done = 0, total = 0;
     for (const a of acts) {
       total++;
       totalAllotted += a.allotted_minutes;
-      const c = compMap[a.id]?.[todayStr] || Object.values(compMap[a.id] || {}).find(x => x.date >= sinceStr);
+      const c = completionFor(a, sinceStr);
       if (c && c.done) {
         done++;
         totalActual += c.actual_minutes || a.allotted_minutes;
       }
     }
     return { total, done, totalAllotted, totalActual };
+  }
+
+  // Of the remaining (not-yet-done) tasks in a tier, how many already have a
+  // committed time (fixed day, or an accepted scheduled_slots row) vs. none yet.
+  function plannedBreakdown(tier, sinceStr, untilStr) {
+    const acts = activities.filter(a => a.tier === tier);
+    const acceptedIds = new Set(
+      db.prepare("SELECT activity_id FROM scheduled_slots WHERE status = 'accepted' AND date BETWEEN ? AND ?").all(sinceStr, untilStr).map(r => r.activity_id)
+    );
+    let planned = 0, unplanned = 0;
+    for (const a of acts) {
+      const c = completionFor(a, sinceStr);
+      if (c && c.done) continue;
+      if (a.fixed_day || acceptedIds.has(a.id)) planned++;
+      else unplanned++;
+    }
+    return { planned, unplanned };
   }
 
   // Last 7 days trend (count of daily activities done per day)
@@ -723,11 +770,14 @@ app.get('/api/analytics', (req, res) => {
     else break;
   }
 
+  const weekEnd = scheduler.addDays(weekStart, 6);
+  const monthEnd = `${monthStart.slice(0, 7)}-${String(scheduler.daysInMonth(monthStart.slice(0, 7))).padStart(2, '0')}`;
+
   res.json({
     date: todayStr,
     daily: statsFor('daily', todayStr),
-    weekly: statsFor('weekly', weekStart),
-    monthly: statsFor('monthly', monthStart),
+    weekly: { ...statsFor('weekly', weekStart), ...plannedBreakdown('weekly', weekStart, weekEnd) },
+    monthly: { ...statsFor('monthly', monthStart), ...plannedBreakdown('monthly', monthStart, monthEnd) },
     trend,
     streak,
   });

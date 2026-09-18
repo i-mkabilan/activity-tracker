@@ -1,5 +1,5 @@
-// Pure scheduling engine: fits pending activities into free gaps around calendar
-// events for a week. No Express/DB/Google imports — server.js wires this up.
+// Pure scheduling engine: suggests calendar-aware time slots for flexible
+// weekly/monthly activities. No Express/DB/Google imports — server.js wires this up.
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -34,6 +34,16 @@ function monthKeyOf(s) { return s.slice(0, 7); }
 function daysInMonth(monthKey) {
   const [y, m] = monthKey.split('-').map(Number);
   return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+// The last date in `monthKey` (YYYY-MM) whose weekday is `weekdayIndex` (0=Sun..6=Sat).
+function lastWeekdayOfMonth(monthKey, weekdayIndex) {
+  const total = daysInMonth(monthKey);
+  for (let d = total; d >= 1; d--) {
+    const ds = `${monthKey}-${pad(d)}`;
+    if (parseDateStr(ds).getUTCDay() === weekdayIndex) return ds;
+  }
+  return null;
 }
 
 // Converts an event's ISO datetime into Asia/Kolkata local {dateStr, minutes}.
@@ -84,12 +94,10 @@ function freeGaps(busyBlocks, dayStart, dayEnd) {
   return gaps.filter(g => g.end > g.start);
 }
 
-// Earliest gap (in order) that fits `duration` minutes, optionally requiring
-// the gap to start before `startBeforeMin`. Returns {index,start,end} or null.
-function fitInGaps(gaps, duration, startBeforeMin) {
+// Earliest gap (in order) that fits `duration` minutes. Returns {index,start,end} or null.
+function fitInGaps(gaps, duration) {
   for (let i = 0; i < gaps.length; i++) {
     const g = gaps[i];
-    if (startBeforeMin != null && g.start >= startBeforeMin) continue;
     if (g.end - g.start >= duration) return { index: i, start: g.start, end: g.start + duration };
   }
   return null;
@@ -105,11 +113,49 @@ function consumeGap(gaps, index, usedEnd) {
   return next;
 }
 
-function buildWeekPlan({ activities, completions, calendarEvents, weekStart, today, settings }) {
-  const workStart = toMinutes(settings.work_start || '09:00');
-  const workEnd = toMinutes(settings.work_end || '18:00');
-  const midpoint = toMinutes(settings.work_midpoint || '13:00');
-  const workDays = (settings.work_days || 'Mon,Tue,Wed,Thu,Fri').split(',').map(s => s.trim());
+function workWindow(settings) {
+  return {
+    workStart: toMinutes(settings.work_start || '09:00'),
+    workEnd: toMinutes(settings.work_end || '18:00'),
+    workDays: (settings.work_days || 'Mon,Tue,Wed,Thu,Fri').split(',').map(s => s.trim()),
+  };
+}
+
+// Seeds one day's busy blocks from calendar events + every activity with a
+// reminder_time that applies to that date (daily every day; weekly/monthly
+// fixed-day activities on their matching date; already-accepted slots).
+function seedDayBusy(dateStr, calendarEvents, activities, acceptedByDate) {
+  const busy = mergeBusyBlocks(calendarEvents, dateStr);
+  for (const a of activities) {
+    if (!a.reminder_time) continue;
+    let matches = false;
+    if (a.tier === 'daily') matches = true;
+    else if (a.fixed_day) matches = a.tier === 'weekly' ? a.fixed_day === weekdayName(dateStr) : a.fixed_day === dayOfMonth(dateStr);
+    if (!matches) continue;
+    const start = toMinutes(a.reminder_time);
+    busy.push({ start, end: start + (a.allotted_minutes || 15) });
+  }
+  for (const s of (acceptedByDate[dateStr] || [])) {
+    busy.push({ start: toMinutes(s.start_time), end: toMinutes(s.end_time) });
+  }
+  busy.sort((x, y) => x.start - y.start);
+  const merged = [];
+  for (const b of busy) {
+    const last = merged[merged.length - 1];
+    if (last && b.start <= last.end) last.end = Math.max(last.end, b.end);
+    else merged.push({ ...b });
+  }
+  return merged;
+}
+
+function isCompletedInRange(completions, id, from, to) {
+  return completions.some(c => c.done && c.activity_id === id && c.date >= from && c.date <= to);
+}
+
+// Suggests slots for weekly-tier activities without a fixed_day, spread across
+// this week's work days, avoiding calendar events / fixed activities / already-accepted slots.
+function buildWeeklySuggestions({ activities, completions, calendarEvents, alreadyAccepted, weekStart, today, settings }) {
+  const { workStart, workEnd, workDays } = workWindow(settings);
 
   const weekDates = [];
   for (let i = 0; i < 7; i++) {
@@ -117,89 +163,89 @@ function buildWeekPlan({ activities, completions, calendarEvents, weekStart, tod
     if (workDays.includes(weekdayName(ds)) && ds >= today) weekDates.push(ds);
   }
 
-  const doneSet = new Set(completions.filter(c => c.done).map(c => `${c.activity_id}|${c.date}`));
-  const isCompletedOn = (id, date) => doneSet.has(`${id}|${date}`);
-  const isCompletedInRange = (id, from, to) =>
-    completions.some(c => c.done && c.activity_id === id && c.date >= from && c.date <= to);
+  const acceptedByDate = {};
+  for (const s of alreadyAccepted || []) (acceptedByDate[s.date] = acceptedByDate[s.date] || []).push(s);
 
   const dayGaps = {};
-  for (const ds of weekDates) {
-    const busy = mergeBusyBlocks(calendarEvents, ds);
-    for (const a of activities) {
-      if (a.tier === 'daily' || !a.fixed_day || !a.reminder_time) continue;
-      const matches = a.tier === 'weekly' ? a.fixed_day === weekdayName(ds) : a.fixed_day === dayOfMonth(ds);
-      if (!matches) continue;
-      const start = toMinutes(a.reminder_time);
-      busy.push({ start, end: start + (a.allotted_minutes || 30) });
-    }
-    busy.sort((x, y) => x.start - y.start);
-    const merged = [];
-    for (const b of busy) {
-      const last = merged[merged.length - 1];
-      if (last && b.start <= last.end) last.end = Math.max(last.end, b.end);
-      else merged.push({ ...b });
-    }
-    dayGaps[ds] = freeGaps(merged, workStart, workEnd);
-  }
+  for (const ds of weekDates) dayGaps[ds] = freeGaps(seedDayBusy(ds, calendarEvents, activities, acceptedByDate), workStart, workEnd);
 
   const placed = [];
   const unscheduled = [];
-
   function place(activity, dates) {
     const duration = activity.allotted_minutes || 15;
     for (const ds of dates) {
       const gaps = dayGaps[ds];
       if (!gaps) continue;
-      let hit = activity.tier === 'daily' ? fitInGaps(gaps, duration, midpoint) : null;
-      if (!hit) hit = fitInGaps(gaps, duration, null);
+      const hit = fitInGaps(gaps, duration);
       if (hit) {
         dayGaps[ds] = consumeGap(gaps, hit.index, hit.end);
-        placed.push({ activity_id: activity.id, date: ds, start_time: toHHMM(hit.start), end_time: toHHMM(hit.end), source: 'auto' });
+        placed.push({ activity_id: activity.id, date: ds, start_time: toHHMM(hit.start), end_time: toHHMM(hit.end) });
         return true;
       }
     }
     return false;
   }
 
-  // Pass 1: daily activities recur every work day, morning-first.
-  const dailyActs = activities.filter(a => a.tier === 'daily');
-  for (const ds of weekDates) {
-    for (const a of dailyActs) {
-      if (isCompletedOn(a.id, ds)) continue;
-      if (!place(a, [ds])) unscheduled.push({ activity_id: a.id, date: ds });
-    }
-  }
-
-  // Pass 2: weekly activities without a fixed day, spread across this week's days.
-  const weeklyFlex = activities.filter(a => a.tier === 'weekly' && !(a.fixed_day && a.reminder_time));
   if (weekDates.length) {
     const weekEnd = weekDates[weekDates.length - 1];
-    const weeklyPending = weeklyFlex.filter(a => !isCompletedInRange(a.id, weekStart, weekEnd));
-    weeklyPending.forEach((a, i) => {
+    const acceptedIds = new Set((alreadyAccepted || []).map(s => s.activity_id));
+    const flexible = activities.filter(a => a.tier === 'weekly' && !a.fixed_day && !acceptedIds.has(a.id));
+    const pending = flexible.filter(a => !isCompletedInRange(completions, a.id, weekStart, weekEnd));
+    pending.forEach((a, i) => {
       const startIdx = i % weekDates.length;
       const rotation = weekDates.slice(startIdx).concat(weekDates.slice(0, startIdx));
       if (!place(a, rotation)) unscheduled.push({ activity_id: a.id });
     });
   }
 
-  // Pass 3: monthly activities without a fixed day, spread across the month, sliced to this week.
-  const monthKey = monthKeyOf(weekStart);
-  const totalDays = daysInMonth(monthKey);
-  const monthWorkDays = [];
-  for (let d = 1; d <= totalDays; d++) {
+  return { placed, unscheduled };
+}
+
+// Suggests slots for monthly-tier activities without a fixed_day, spread across
+// the whole month's work days.
+function buildMonthlySuggestions({ activities, completions, calendarEvents, alreadyAccepted, monthKey, today, settings }) {
+  const { workStart, workEnd, workDays } = workWindow(settings);
+
+  const total = daysInMonth(monthKey);
+  const monthDates = [];
+  for (let d = 1; d <= total; d++) {
     const ds = `${monthKey}-${pad(d)}`;
-    if (workDays.includes(weekdayName(ds)) && ds >= today) monthWorkDays.push(ds);
+    if (workDays.includes(weekdayName(ds)) && ds >= today) monthDates.push(ds);
   }
-  const monthlyFlex = activities.filter(a => a.tier === 'monthly' && !(a.fixed_day && a.reminder_time));
-  const monthStart = `${monthKey}-01`;
-  const monthEnd = `${monthKey}-${pad(totalDays)}`;
-  const monthlyPending = monthlyFlex.filter(a => !isCompletedInRange(a.id, monthStart, monthEnd));
-  if (monthWorkDays.length && monthlyPending.length) {
-    monthlyPending.forEach((a, i) => {
-      const idx = Math.floor((i * monthWorkDays.length) / monthlyPending.length);
-      const assignedDate = monthWorkDays[idx];
-      if (!weekDates.includes(assignedDate)) return; // falls in a different week
-      if (!place(a, [assignedDate])) unscheduled.push({ activity_id: a.id, date: assignedDate });
+
+  const acceptedByDate = {};
+  for (const s of alreadyAccepted || []) (acceptedByDate[s.date] = acceptedByDate[s.date] || []).push(s);
+
+  const dayGaps = {};
+  for (const ds of monthDates) dayGaps[ds] = freeGaps(seedDayBusy(ds, calendarEvents, activities, acceptedByDate), workStart, workEnd);
+
+  const placed = [];
+  const unscheduled = [];
+  function place(activity, dates) {
+    const duration = activity.allotted_minutes || 15;
+    for (const ds of dates) {
+      const gaps = dayGaps[ds];
+      if (!gaps) continue;
+      const hit = fitInGaps(gaps, duration);
+      if (hit) {
+        dayGaps[ds] = consumeGap(gaps, hit.index, hit.end);
+        placed.push({ activity_id: activity.id, date: ds, start_time: toHHMM(hit.start), end_time: toHHMM(hit.end) });
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (monthDates.length) {
+    const monthStart = `${monthKey}-01`;
+    const monthEnd = `${monthKey}-${pad(total)}`;
+    const acceptedIds = new Set((alreadyAccepted || []).map(s => s.activity_id));
+    const flexible = activities.filter(a => a.tier === 'monthly' && !a.fixed_day && !acceptedIds.has(a.id));
+    const pending = flexible.filter(a => !isCompletedInRange(completions, a.id, monthStart, monthEnd));
+    pending.forEach((a, i) => {
+      const startIdx = i % monthDates.length;
+      const rotation = monthDates.slice(startIdx).concat(monthDates.slice(0, startIdx));
+      if (!place(a, rotation)) unscheduled.push({ activity_id: a.id });
     });
   }
 
@@ -207,6 +253,7 @@ function buildWeekPlan({ activities, completions, calendarEvents, weekStart, tod
 }
 
 module.exports = {
-  toMinutes, toHHMM, addDays, weekdayName, dayOfMonth,
-  mergeBusyBlocks, freeGaps, fitInGaps, consumeGap, buildWeekPlan,
+  toMinutes, toHHMM, addDays, weekdayName, dayOfMonth, monthKeyOf, daysInMonth, lastWeekdayOfMonth,
+  mergeBusyBlocks, freeGaps, fitInGaps, consumeGap,
+  buildWeeklySuggestions, buildMonthlySuggestions,
 };

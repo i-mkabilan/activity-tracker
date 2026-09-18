@@ -24,7 +24,14 @@
       <p class="date" id="todayLabel"></p>
     </div>
     <div class="streak" id="streakBadge">0-day streak</div>
-    <button class="settings-btn" id="settingsBtn" title="Notification times">
+    <button class="icon-btn" id="analyticsBtn" title="Analytics">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="20" x2="18" y2="10"></line>
+        <line x1="12" y1="20" x2="12" y2="4"></line>
+        <line x1="6" y1="20" x2="6" y2="14"></line>
+      </svg>
+    </button>
+    <button class="icon-btn" id="settingsBtn" title="Settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3"></circle>
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -37,12 +44,15 @@
     <button id="notifyBtn">Enable</button>
   </div>
 
+  <div id="connectBanner" class="notify-banner" style="display:none;">
+    <span>Connect Google Calendar to see your meetings and get calendar-aware time suggestions.</span>
+    <button id="connectBtn">Connect</button>
+  </div>
+
   <nav class="tiers">
     <button class="tier-btn active" data-tier="daily">Daily</button>
     <button class="tier-btn" data-tier="weekly">Weekly</button>
     <button class="tier-btn" data-tier="monthly">Monthly</button>
-    <button class="tier-btn" data-tier="plan">Plan</button>
-    <button class="tier-btn" data-tier="history">History</button>
   </nav>
 
   <main id="mainView">
@@ -52,92 +62,30 @@
         <span class="panel-count" id="tierCount">0 / 0 done</span>
       </div>
       <p class="tier-hint" id="tierHint"></p>
+
+      <div id="dailyDateRow" class="period-toolbar" style="display:none;">
+        <button class="date-nav-btn" id="prevDayBtn" aria-label="Previous day">&lsaquo;</button>
+        <input type="date" id="dailyDateInput" />
+        <button class="date-nav-btn" id="nextDayBtn" aria-label="Next day">&rsaquo;</button>
+      </div>
+
+      <div id="periodToolbar" class="period-toolbar" style="display:none;">
+        <button class="date-nav-btn" id="prevPeriodBtn">&lsaquo; Prev</button>
+        <span class="period-label" id="periodLabel"></span>
+        <button class="date-nav-btn" id="nextPeriodBtn">Next &rsaquo;</button>
+      </div>
+
       <div id="calendarSection" class="calendar-section" style="display:none;">
         <div class="calendar-head">
-          <span class="calendar-label">Today's calendar</span>
-          <button class="cal-disconnect" id="calDisconnectBtn" title="Disconnect">Disconnect</button>
+          <span class="calendar-label">Calendar</span>
         </div>
         <div id="calendarEvents" class="calendar-events"></div>
       </div>
-      <button class="connect-cal-btn" id="connectCalBtn" style="display:none;">Connect Google Calendar</button>
-      <div id="tasksReconnectBanner" class="tasks-reconnect" style="display:none;">
-        Reconnect to enable Google Tasks sync
-        <button id="tasksReconnectBtn">Reconnect</button>
-      </div>
+
       <div id="activityList" class="activity-list"></div>
       <button class="add-btn" id="addBtn">+ Add activity</button>
     </section>
-
-    <section class="panel analytics-panel" id="analyticsPanel">
-      <div class="panel-head">
-        <span class="panel-label">Time ledger</span>
-        <span class="panel-count" id="timeLabel"></span>
-      </div>
-
-      <div class="time-bars">
-        <div class="time-row">
-          <span class="time-row-label">Daily</span>
-          <div class="time-bar"><div class="time-fill" id="fillDaily"></div></div>
-          <span class="time-row-val" id="valDaily"></span>
-        </div>
-        <div class="time-row">
-          <span class="time-row-label">Weekly</span>
-          <div class="time-bar"><div class="time-fill" id="fillWeekly"></div></div>
-          <span class="time-row-val" id="valWeekly"></span>
-        </div>
-        <div class="time-row">
-          <span class="time-row-label">Monthly</span>
-          <div class="time-bar"><div class="time-fill" id="fillMonthly"></div></div>
-          <span class="time-row-val" id="valMonthly"></span>
-        </div>
-      </div>
-
-      <div class="panel-head" style="margin-top:22px;">
-        <span class="panel-label">Last 7 days</span>
-      </div>
-      <div class="week-bars" id="weekBars"></div>
-    </section>
   </main>
-
-  <section class="panel plan-panel" id="planPanel" style="display:none;">
-    <div class="panel-head">
-      <span class="panel-label">Week plan</span>
-      <span class="panel-count" id="planRange"></span>
-    </div>
-    <p class="tier-hint">Auto-fits pending tasks into the free gaps around your calendar meetings.</p>
-    <div class="plan-toolbar">
-      <button class="btn-ghost" id="planPrevBtn">Prev week</button>
-      <button class="btn-solid" id="planRegenBtn">Regenerate</button>
-      <button class="btn-ghost" id="planNextBtn">Next week</button>
-    </div>
-    <div id="planDays" class="plan-days"></div>
-  </section>
-
-  <section class="panel history-panel" id="historyPanel" style="display:none;">
-    <div class="panel-head">
-      <span class="panel-label">Past record</span>
-    </div>
-    <div id="historyDailyList" class="history-days"></div>
-
-    <div class="panel-head" style="margin-top:20px;">
-      <span class="panel-label">Weekly record</span>
-    </div>
-    <div id="historyWeeklyList" class="history-rows"></div>
-
-    <div class="panel-head" style="margin-top:20px;">
-      <span class="panel-label">Monthly record</span>
-    </div>
-    <div id="historyMonthlyList" class="history-rows"></div>
-
-    <div class="panel-head" style="margin-top:22px;">
-      <span class="panel-label">Monthly report</span>
-    </div>
-    <p class="tier-hint" style="margin-bottom:10px;">Download the LSW-format report for any month, with your actual completion record filled in.</p>
-    <div class="report-row">
-      <input type="month" id="reportMonth" />
-      <button class="btn-solid" id="downloadReportBtn">Download PDF</button>
-    </div>
-  </section>
 
 </div>
 
@@ -174,6 +122,21 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="chooseTimeBackdrop">
+  <div class="modal">
+    <p class="modal-title">Choose a time</p>
+    <p class="modal-sub" id="chooseTimeName"></p>
+    <label>Date</label>
+    <input type="date" id="chooseTimeDate" />
+    <label>Start time</label>
+    <input type="time" id="chooseTimeInput" />
+    <div class="modal-actions">
+      <button class="btn-ghost" id="chooseTimeCancelBtn">Cancel</button>
+      <button class="btn-solid" id="chooseTimeSaveBtn">Save</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="settingsBackdrop">
   <div class="modal">
     <p class="modal-title">Notification times</p>
@@ -191,20 +154,90 @@
     <label>End-of-day status</label>
     <input type="time" id="setEod" />
 
-    <p class="modal-title" style="font-size:14px;margin:18px 0 4px;">Work hours (for auto-scheduling)</p>
+    <label>Plan-next-week nudge (fires Sat &amp; Sun)</label>
+    <input type="time" id="setWeekPlanning" />
+    <label>Plan-next-month nudge (fires the month's last Sat &amp; Sun)</label>
+    <input type="time" id="setMonthPlanning" />
+
+    <p class="modal-title" style="font-size:14px;margin:18px 0 4px;">Work hours (for scheduling suggestions)</p>
 
     <label>Work day starts</label>
     <input type="time" id="setWorkStart" />
     <label>Work day ends</label>
     <input type="time" id="setWorkEnd" />
-    <label>Morning / afternoon split</label>
-    <input type="time" id="setWorkMidpoint" />
     <label>Work days (comma-separated, e.g. Mon,Tue,Wed,Thu,Fri)</label>
     <input type="text" id="setWorkDays" placeholder="Mon,Tue,Wed,Thu,Fri" />
+
+    <div class="settings-cal-status" id="settingsCalStatus" style="display:none;">
+      <span id="settingsCalEmail"></span>
+      <button id="disconnectBtn">Disconnect</button>
+    </div>
 
     <div class="modal-actions">
       <button class="btn-ghost" id="settingsCancelBtn">Cancel</button>
       <button class="btn-solid" id="settingsSaveBtn">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="analyticsBackdrop">
+  <div class="modal analytics-modal">
+    <p class="modal-title">Analytics</p>
+
+    <div class="breakdown-grid" id="breakdownGrid"></div>
+
+    <div class="panel-head" style="margin-top:18px;">
+      <span class="panel-label">Time ledger</span>
+    </div>
+    <div class="time-bars">
+      <div class="time-row">
+        <span class="time-row-label">Daily</span>
+        <div class="time-bar"><div class="time-fill" id="fillDaily"></div></div>
+        <span class="time-row-val" id="valDaily"></span>
+      </div>
+      <div class="time-row">
+        <span class="time-row-label">Weekly</span>
+        <div class="time-bar"><div class="time-fill" id="fillWeekly"></div></div>
+        <span class="time-row-val" id="valWeekly"></span>
+      </div>
+      <div class="time-row">
+        <span class="time-row-label">Monthly</span>
+        <div class="time-bar"><div class="time-fill" id="fillMonthly"></div></div>
+        <span class="time-row-val" id="valMonthly"></span>
+      </div>
+    </div>
+
+    <div class="panel-head" style="margin-top:18px;">
+      <span class="panel-label">Last 7 days</span>
+    </div>
+    <div class="week-bars" id="weekBars"></div>
+
+    <div class="panel-head" style="margin-top:18px;">
+      <span class="panel-label">Past record</span>
+    </div>
+    <div id="historyDailyList" class="history-days"></div>
+
+    <div class="panel-head" style="margin-top:14px;">
+      <span class="panel-label">Weekly record</span>
+    </div>
+    <div id="historyWeeklyList" class="history-rows"></div>
+
+    <div class="panel-head" style="margin-top:14px;">
+      <span class="panel-label">Monthly record</span>
+    </div>
+    <div id="historyMonthlyList" class="history-rows"></div>
+
+    <div class="panel-head" style="margin-top:18px;">
+      <span class="panel-label">Monthly report</span>
+    </div>
+    <p class="tier-hint" style="margin-bottom:10px;">Download the LSW-format report for any month, with your actual completion record filled in.</p>
+    <div class="report-row">
+      <input type="month" id="reportMonth" />
+      <button class="btn-solid" id="downloadReportBtn">Download PDF</button>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-solid" id="analyticsCloseBtn">Close</button>
     </div>
   </div>
 </div>

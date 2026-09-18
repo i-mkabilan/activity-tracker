@@ -86,6 +86,8 @@ const defaultSettings = {
   work_end: '18:00',
   work_midpoint: '13:00',
   work_days: 'Mon,Tue,Wed,Thu,Fri',
+  week_planning_time: '10:00',
+  month_planning_time: '10:00',
 };
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
 for (const [k, v] of Object.entries(defaultSettings)) insertSetting.run(k, v);
